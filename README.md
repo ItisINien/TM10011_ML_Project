@@ -4,3 +4,7 @@ Read the project guidelines (TM10011_projectguidelines) and work out your soluti
 Clone the projectgit and select your group dataset
 "clone https://github.com/jveenland/TM10011_ML_Project.git"
 NB: for the ECG dataset, please unzip the file 'ecg.zip' before loading it.
+
+
+TEST staat dit in mn eigen branche?
+
