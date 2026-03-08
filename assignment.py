@@ -72,6 +72,7 @@ for i, (train_index, test_index) in enumerate(skf.split(X, y)): # 2. Loop door d
 from sklearn.feature_selection import SelectKBest, f_classif
 
 scores = []# We maken een lijstje om de resultaten per fold in op te slaan
+features_per_fold = [] # We maken een lijstje om de gekozen features per fold in op te slaan, zodat we later kunnen vergelijken welke features in meerdere folds voorkomen
 
 for i, (train_index, test_index) in enumerate(skf.split(X, y)):# Hier begint de loop door de 5 folds
 
@@ -84,27 +85,28 @@ for i, (train_index, test_index) in enumerate(skf.split(X, y)):# Hier begint de 
     X_test_selected = selector.transform(X_test)   # Pas dezelfde selectie (dezelfde kolommen) toe op de testset
 
     cols = selector.get_support(indices=True)   # Controle Welke features zijn gekozen in deze fold?
-    features_in_fold = X.columns[cols]
+    features_in_fold = X.columns[cols] # Pak de namen van de gekozen features in deze fold
+    features_per_fold.append(set(features_in_fold)) # Sla de gekozen features van deze fold op in een lijst (set) om later te vergelijken tussen folds
+
     
     print(f"FOLD {i+1}:") # print welke fold we aan het trainen zijn
     print(f"  Training op {len(X_train)} patiënten, testen op {len(X_test)}") # print aantal patiënten in train en test van deze fold
-    print(f"  Top feature in deze fold: {features_in_fold[0]}") # print de beste feature van deze fold
+    print(f"  Top feature in deze fold: {features_in_fold[0]}") # print de beste feature van deze fold, vrij nutteloos maar prima
     print("-" * 30) 
 
-    #print(X_train_selected.shape) # Check de vorm van de geselecteerde trainingsdata (aantal rijen, aantal geselecteerde features)
-
- # p-waarden check; Bekijk de p-waarden van de geselecteerde features per fold
- # 1. Haal de p-waarden op van de t-test (F-test) resultaten
-    p_waarden_alle = selector.pvalues_
+ 
+    p_waarden_alle = selector.pvalues_ # p-waarden check; Bekijk de p-waarden van de geselecteerde features per fold
+    p_waarden_top10 = p_waarden_alle[cols] # Pak alleen de p-waarden van de 10 gekozen features
     
-    # 2. Pak alleen de p-waarden van de 10 gekozen features
-    # 'cols' zijn de indices die we eerder hebben opgehaald
-    p_waarden_top10 = p_waarden_alle[cols]
-    
-    # 3. Print het overzicht voor deze fold
-    print(f"--- SIGNIFICANTIE CHECK FOLD {i+1} ---")
-    for naam, p in zip(features_in_fold, p_waarden_top10):
+    print(f"--- SIGNIFICANTIE CHECK FOLD {i+1} ---") # Print het overzicht voor deze fold
+    for naam, p in zip(features_in_fold, p_waarden_top10): # Loop door de gekozen features en hun p-waarden, print ze netjes uit
         status = "SIG" if p < 0.05 else "NIET SIG"
         print(f"Feature: {naam[:30]:<30} | p-waarde: {p:.5f} | {status}")
     print("-" * 30)
-# %%
+
+stabiele_features = set.intersection(*features_per_fold) # Bekijk welke features in alle 5 folds in de top 10 staan
+
+print(f"Aantal features in alle 5 folds: {len(stabiele_features)}")
+print(list(stabiele_features))
+
+
