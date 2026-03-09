@@ -79,7 +79,7 @@ for i, (train_index, test_index) in enumerate(skf.split(X, y)):# Hier begint de 
     X_train, X_test = X.iloc[train_index], X.iloc[test_index] # data slipsten dus train: 4 folds en Test: 1 fold
     y_train, y_test = y.iloc[train_index], y.iloc[test_index]
     
-    selector = SelectKBest(score_func=f_classif, k=10) # Feature selectie met de ANOVA F-test, kies de top 10 features
+    selector = SelectKBest(score_func=f_classif, k=20) # Feature selectie met de ANOVA F-test, kies de top 10 features
     X_train_selected = selector.fit_transform(X_train, y_train)
     
     X_test_selected = selector.transform(X_test)   # Pas dezelfde selectie (dezelfde kolommen) toe op de testset
