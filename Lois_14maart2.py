@@ -75,6 +75,8 @@ X_test_scaled = pd.DataFrame(
     index=X_test.index
 )
 
+
+
 # Define the model that will be used inside RFECV
 # Random Forest can estimate feature importance
 rf_model = RandomForestClassifier(
@@ -100,7 +102,9 @@ rfecv = RFECV(
 rfecv.fit(X_train_scaled, y_train)
 
 # Get the names of the selected features
+max_features = 14
 selected_features_rfecv = X_train.columns[rfecv.support_].tolist()
+selected_features_rfecv = selected_features_rfecv[:max_features]
 
 # Keep only the selected features
 X_train_selected = X_train_scaled[selected_features_rfecv]
