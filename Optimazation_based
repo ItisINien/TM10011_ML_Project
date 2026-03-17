@@ -1,0 +1,105 @@
+# %% IMPORTS
+import pandas as pd
+import numpy as np
+from sklearn.preprocessing import RobustScaler
+from sklearn.model_selection import StratifiedKFold, train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.feature_selection import RFECV
+from sklearn.metrics import roc_auc_score, accuracy_score
+import matplotlib.pyplot as plt
+from worcliver.load_data import load_data
+
+# %% 1️⃣ LOAD DATA
+data = load_data()
+X = data.select_dtypes(include=[np.number])
+y = data['label'].map({'benign': 0, 'malignant': 1})
+
+# %% 2️⃣ TRAIN/TEST SPLIT
+X_trainval, X_test, y_trainval, y_test = train_test_split(
+    X, y, test_size=0.2, stratify=y, random_state=42
+)
+
+# %% 3️⃣ NESTED CV SETUP
+outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+inner_cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
+
+all_y_outer = []
+all_y_outer_proba = []
+
+for outer_train_idx, outer_val_idx in outer_cv.split(X_trainval, y_trainval):
+    X_outer_train, X_outer_val = X_trainval.iloc[outer_train_idx], X_trainval.iloc[outer_val_idx]
+    y_outer_train, y_outer_val = y_trainval.iloc[outer_train_idx], y_trainval.iloc[outer_val_idx]
+
+    # --- SCALE DATA ---
+    scaler = RobustScaler()
+    X_outer_train_scaled = scaler.fit_transform(X_outer_train)
+    X_outer_val_scaled = scaler.transform(X_outer_val)
+
+    # --- RFECV FEATURE SELECTION ---
+    rf_model = RandomForestClassifier(n_estimators=100, random_state=42)
+    rfecv = RFECV(
+        estimator=rf_model,
+        step=10,
+        cv=inner_cv,
+        scoring='roc_auc',
+        min_features_to_select=5,  # kan aanpassen
+        n_jobs=-1
+    )
+
+    rfecv.fit(X_outer_train_scaled, y_outer_train)
+
+    # Select features
+    selected_features = X_outer_train.columns[rfecv.support_]
+
+    X_outer_train_selected = pd.DataFrame(X_outer_train_scaled, columns=X_outer_train.columns)[selected_features]
+    X_outer_val_selected = pd.DataFrame(X_outer_val_scaled, columns=X_outer_val.columns)[selected_features]
+
+    # --- TRAIN MODEL OP OUTER TRAIN FOLD ---
+    clf = RandomForestClassifier(n_estimators=100, random_state=42)
+    clf.fit(X_outer_train_selected, y_outer_train)
+
+    # Predict probabilities
+    y_outer_proba = clf.predict_proba(X_outer_val_selected)[:,1]
+    all_y_outer.extend(y_outer_val)
+    all_y_outer_proba.extend(y_outer_proba)
+
+# %% 4️⃣ EVALUATE ON NESTED CV
+roc_auc = roc_auc_score(all_y_outer, all_y_outer_proba)
+accuracy = accuracy_score(all_y_outer, [1 if p >= 0.5 else 0 for p in all_y_outer_proba])
+print(f"Nested CV ROC-AUC: {roc_auc:.3f}")
+print(f"Nested CV Accuracy (threshold 0.5): {accuracy:.3f}")
+
+# %% 5️⃣ FINAL MODEL OP TRAIN/VALIDATION SET
+# SCALE TRAIN/VALIDATION
+scaler = RobustScaler()
+X_trainval_scaled = scaler.fit_transform(X_trainval)
+X_test_scaled = scaler.transform(X_test)
+
+# RFECV op volledige train/validation set
+rf_model = RandomForestClassifier(n_estimators=100, random_state=42)
+rfecv = RFECV(
+    estimator=rf_model,
+    step=1,
+    cv=inner_cv,
+    scoring='roc_auc',
+    min_features_to_select=5,
+    n_jobs=-1
+)
+rfecv.fit(X_trainval_scaled, y_trainval)
+
+selected_features_final = X_trainval.columns[rfecv.support_]
+
+X_trainval_selected = pd.DataFrame(X_trainval_scaled, columns=X_trainval.columns)[selected_features_final]
+X_test_selected = pd.DataFrame(X_test_scaled, columns=X_test.columns)[selected_features_final]
+
+clf_final = RandomForestClassifier(n_estimators=100, random_state=42)
+clf_final.fit(X_trainval_selected, y_trainval)
+
+y_test_proba = clf_final.predict_proba(X_test_selected)[:,1]
+y_test_pred = [1 if p >= 0.5 else 0 for p in y_test_proba]
+
+roc_auc_test = roc_auc_score(y_test, y_test_proba)
+accuracy_test = accuracy_score(y_test, y_test_pred)
+
+print(f"Test ROC-AUC: {roc_auc_test:.3f}")
+print(f"Test Accuracy (threshold 0.5): {accuracy_test:.3f}")

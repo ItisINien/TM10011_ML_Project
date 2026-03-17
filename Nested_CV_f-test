@@ -1,0 +1,120 @@
+# %% IMPORTS
+import pandas as pd
+import numpy as np
+from collections import Counter
+from sklearn.preprocessing import RobustScaler
+from sklearn.feature_selection import f_classif
+from sklearn.model_selection import StratifiedKFold, train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.svm import SVC
+from sklearn.metrics import roc_auc_score, accuracy_score
+import matplotlib.pyplot as plt
+from worcliver.load_data import load_data
+
+# %% 1️⃣ LOAD DATA
+data = load_data()
+X = data.select_dtypes(include=[np.number])
+y = data['label'].map({'benign': 0, 'malignant': 1})
+
+# %% 2️⃣ TRAIN/TEST SPLIT
+X_trainval, X_test, y_trainval, y_test = train_test_split(
+    X, y, test_size=0.2, stratify=y, random_state=42
+)
+
+print(f"Train/Validation samples: {len(X_trainval)}, Test samples: {len(X_test)}")
+
+# %% 3️⃣ NESTED CV ON TRAIN/VALIDATION FOR FEATURE SELECTION + HYPERPARAMETER TUNING
+outer_splits = 5
+inner_splits = 3
+outer_cv = StratifiedKFold(n_splits=outer_splits, shuffle=True, random_state=42)
+inner_cv = StratifiedKFold(n_splits=inner_splits, shuffle=True, random_state=42)
+
+all_y_outer = []
+all_y_outer_proba = []
+
+for outer_train_idx, outer_val_idx in outer_cv.split(X_trainval, y_trainval):
+    # Split outer fold
+    X_outer_train, X_outer_val = X_trainval.iloc[outer_train_idx], X_trainval.iloc[outer_val_idx]
+    y_outer_train, y_outer_val = y_trainval.iloc[outer_train_idx], y_trainval.iloc[outer_val_idx]
+
+    # --- INNER LOOP: FEATURE SELECTION ---
+    features_per_inner_fold = []
+    
+    for inner_train_idx, inner_val_idx in inner_cv.split(X_outer_train, y_outer_train):
+        X_inner_train = X_outer_train.iloc[inner_train_idx]
+        y_inner_train = y_outer_train.iloc[inner_train_idx]
+        
+        # Scale inner train
+        scaler = RobustScaler()
+        X_inner_scaled = pd.DataFrame(scaler.fit_transform(X_inner_train), columns=X_inner_train.columns)
+        
+        # F-test for feature selection
+        f_vals, p_vals = f_classif(X_inner_scaled, y_inner_train)
+        sig_indices = np.where(p_vals < 0.05)[0]
+        
+        if len(sig_indices) > 0:
+            sorted_sig_indices = sig_indices[np.argsort(f_vals[sig_indices])[::-1]]
+            top_indices = sorted_sig_indices[:30]
+            features_per_inner_fold.append(list(X_inner_train.columns[top_indices]))
+
+    # Select top 14 features over inner folds
+    all_inner_features = [f for fold in features_per_inner_fold for f in fold]
+    counter = Counter(all_inner_features)
+    top_features = [feature for feature, _ in counter.most_common(14)]
+    
+    # --- TRAIN MODEL ON OUTER TRAIN FOLD WITH SELECTED FEATURES ---
+    X_outer_train_selected = X_outer_train[top_features]
+    X_outer_val_selected = X_outer_val[top_features]
+    
+    scaler = RobustScaler()
+    X_outer_train_scaled = scaler.fit_transform(X_outer_train_selected)
+    X_outer_val_scaled = scaler.transform(X_outer_val_selected)
+    
+    # Train classifier (Random Forest / SVC)
+    #clf = RandomForestClassifier(n_estimators=100, random_state=42)
+    clf = SVC(kernel='rbf', probability=True, random_state=42)  # uncomment for SVC
+    
+    clf.fit(X_outer_train_scaled, y_outer_train)
+    
+    # Predict probabilities on outer validation fold
+    y_outer_proba = clf.predict_proba(X_outer_val_scaled)[:,1]
+    y_outer_pred = [1 if p >= 0.5 else 0 for p in y_outer_proba]
+    
+    all_y_outer.extend(y_outer_val)
+    all_y_outer_proba.extend(y_outer_proba)
+
+# %% 4️⃣ EVALUATE ON TRAIN/VALIDATION
+roc_auc = roc_auc_score(all_y_outer, all_y_outer_proba)
+accuracy = accuracy_score(all_y_outer, [1 if p >= 0.5 else 0 for p in all_y_outer_proba])
+
+print(f"Nested CV ROC-AUC (Train/Validation folds): {roc_auc:.3f}")
+print(f"Nested CV Accuracy (Train/Validation folds, threshold 0.5): {accuracy:.3f}")
+
+# %% 5️⃣ TRAIN FINAL MODEL ON ENTIRE TRAIN/VALIDATION SET AND EVALUATE ON TEST SET
+# Feature selection on entire train/validation
+scaler = RobustScaler()
+X_trainval_scaled = pd.DataFrame(scaler.fit_transform(X_trainval), columns=X_trainval.columns)
+
+f_vals, p_vals = f_classif(X_trainval_scaled, y_trainval)
+sig_indices = np.where(p_vals < 0.05)[0]
+sorted_sig_indices = sig_indices[np.argsort(f_vals[sig_indices])[::-1]]
+top_indices = sorted_sig_indices[:14]
+final_features = list(X_trainval.columns[top_indices])
+
+# Train final model
+X_trainval_selected = scaler.fit_transform(X_trainval[final_features])
+X_test_selected = scaler.transform(X_test[final_features])
+
+clf_final = RandomForestClassifier(n_estimators=100, random_state=42)
+# clf_final = SVC(kernel='rbf', probability=True, random_state=42)  # uncomment for SVC
+clf_final.fit(X_trainval_selected, y_trainval)
+
+# Predict on test set
+y_test_proba = clf_final.predict_proba(X_test_selected)[:,1]
+y_test_pred = [1 if p >= 0.5 else 0 for p in y_test_proba]
+
+roc_auc_test = roc_auc_score(y_test, y_test_proba)
+accuracy_test = accuracy_score(y_test, y_test_pred)
+
+print(f"Test ROC-AUC: {roc_auc_test:.3f}")
+print(f"Test Accuracy (threshold 0.5): {accuracy_test:.3f}")
