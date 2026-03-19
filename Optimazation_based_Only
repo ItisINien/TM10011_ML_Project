@@ -42,11 +42,12 @@ for outer_train_idx, outer_val_idx in outer_cv.split(X_trainval, y_trainval):
         step=10,
         cv=inner_cv,
         scoring='roc_auc',
-        min_features_to_select=5,  # kan aanpassen
+        min_features_to_select=5, 
         n_jobs=-1
     )
 
     rfecv.fit(X_outer_train_scaled, y_outer_train)
+    print("Selected features:", rfecv.n_features_)
 
     # Select features
     selected_features = X_outer_train.columns[rfecv.support_]
@@ -62,44 +63,50 @@ for outer_train_idx, outer_val_idx in outer_cv.split(X_trainval, y_trainval):
     y_outer_proba = clf.predict_proba(X_outer_val_selected)[:,1]
     all_y_outer.extend(y_outer_val)
     all_y_outer_proba.extend(y_outer_proba)
+    fold_auc = roc_auc_score(y_outer_val, y_outer_proba)
+    print(f"Fold AUC: {fold_auc:.3f}")
 
 # %% 4️⃣ EVALUATE ON NESTED CV
 roc_auc = roc_auc_score(all_y_outer, all_y_outer_proba)
 accuracy = accuracy_score(all_y_outer, [1 if p >= 0.5 else 0 for p in all_y_outer_proba])
 print(f"Nested CV ROC-AUC: {roc_auc:.3f}")
 print(f"Nested CV Accuracy (threshold 0.5): {accuracy:.3f}")
+print("Number of selected features:", rfecv.n_features_)
 
-# %% 5️⃣ FINAL MODEL OP TRAIN/VALIDATION SET
-# SCALE TRAIN/VALIDATION
-scaler = RobustScaler()
-X_trainval_scaled = scaler.fit_transform(X_trainval)
-X_test_scaled = scaler.transform(X_test)
 
-# RFECV op volledige train/validation set
-rf_model = RandomForestClassifier(n_estimators=100, random_state=42)
-rfecv = RFECV(
-    estimator=rf_model,
-    step=1,
-    cv=inner_cv,
-    scoring='roc_auc',
-    min_features_to_select=5,
-    n_jobs=-1
-)
-rfecv.fit(X_trainval_scaled, y_trainval)
+# # %% 5️⃣ FINAL MODEL OP TRAIN/VALIDATION SET
+# # SCALE TRAIN/VALIDATION
+# scaler = RobustScaler()
+# X_trainval_scaled = scaler.fit_transform(X_trainval)
+# X_test_scaled = scaler.transform(X_test)
 
-selected_features_final = X_trainval.columns[rfecv.support_]
+# # RFECV op volledige train/validation set
+# rf_model = RandomForestClassifier(n_estimators=100, random_state=42)
+# rfecv = RFECV(
+#     estimator=rf_model,
+#     step=1,
+#     cv=inner_cv,
+#     scoring='roc_auc',
+#     min_features_to_select=5,
+#     n_jobs=-1
+# )
+# rfecv.fit(X_trainval_scaled, y_trainval)
 
-X_trainval_selected = pd.DataFrame(X_trainval_scaled, columns=X_trainval.columns)[selected_features_final]
-X_test_selected = pd.DataFrame(X_test_scaled, columns=X_test.columns)[selected_features_final]
+# selected_features_final = X_trainval.columns[rfecv.support_]
 
-clf_final = RandomForestClassifier(n_estimators=100, random_state=42)
-clf_final.fit(X_trainval_selected, y_trainval)
+# X_trainval_selected = pd.DataFrame(X_trainval_scaled, columns=X_trainval.columns)[selected_features_final]
+# X_test_selected = pd.DataFrame(X_test_scaled, columns=X_test.columns)[selected_features_final]
 
-y_test_proba = clf_final.predict_proba(X_test_selected)[:,1]
-y_test_pred = [1 if p >= 0.5 else 0 for p in y_test_proba]
+# clf_final = RandomForestClassifier(n_estimators=100, random_state=42)
+# clf_final.fit(X_trainval_selected, y_trainval)
 
-roc_auc_test = roc_auc_score(y_test, y_test_proba)
-accuracy_test = accuracy_score(y_test, y_test_pred)
+# y_test_proba = clf_final.predict_proba(X_test_selected)[:,1]
+# y_test_pred = [1 if p >= 0.5 else 0 for p in y_test_proba]
 
-print(f"Test ROC-AUC: {roc_auc_test:.3f}")
-print(f"Test Accuracy (threshold 0.5): {accuracy_test:.3f}")
+# roc_auc_test = roc_auc_score(y_test, y_test_proba)
+# accuracy_test = accuracy_score(y_test, y_test_pred)
+
+# print(f"Test ROC-AUC: {roc_auc_test:.3f}")
+# print(f"Test Accuracy (threshold 0.5): {accuracy_test:.3f}")
+
+# %%

@@ -1,0 +1,126 @@
+# %% IMPORTS
+import pandas as pd
+import numpy as np
+from sklearn.preprocessing import RobustScaler
+from sklearn.model_selection import StratifiedKFold, GridSearchCV, train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.feature_selection import SelectKBest, f_classif
+from sklearn.pipeline import Pipeline
+from sklearn.metrics import roc_auc_score
+from sklearn.base import BaseEstimator, TransformerMixin
+from worcliver.load_data import load_data
+
+# %% 1️⃣ CUSTOM TRANSFORMER VOOR CORR + SELECTK
+class CorrAndSelect(BaseEstimator, TransformerMixin):
+    def __init__(self, k=200, corr_threshold=0.9):
+        self.k = k
+        self.corr_threshold = corr_threshold
+    
+    def fit(self, X, y):
+        # Correlatiefilter
+        corr_matrix = X.corr().abs()
+        upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+        self.to_drop_ = [col for col in upper.columns if any(upper[col] > self.corr_threshold)]
+        X_filtered = X.drop(columns=self.to_drop_)
+        
+        # Univariate selectie
+        self.selector_ = SelectKBest(score_func=f_classif, k=min(self.k, X_filtered.shape[1]))
+        self.selector_.fit(X_filtered, y)
+        
+        # Houd geselecteerde features bij
+        self.features_ = X_filtered.columns[self.selector_.get_support()]
+        return self
+    
+    def transform(self, X):
+        X_filtered = X.drop(columns=self.to_drop_)
+        return pd.DataFrame(self.selector_.transform(X_filtered), columns=self.features_)
+
+# %% 2️⃣ LOAD DATA
+data = load_data()
+X = data.select_dtypes(include=[np.number])
+y = data['label'].map({'benign': 0, 'malignant': 1})
+
+# %% 3️⃣ TRAIN/TEST SPLIT
+X_trainval, X_test, y_trainval, y_test = train_test_split(
+    X, y, test_size=0.2, stratify=y, random_state=42
+)
+
+
+# %% 4️⃣ NESTED CV: feature selectie in outer, gridsearch in inner
+outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+inner_cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
+
+all_y_outer = []
+all_y_outer_proba = []
+
+feature_importances_list = []
+
+# Hyperparameter grid voor RandomForest
+param_grid = {
+    'clf__n_estimators': [100, 200],
+    'clf__max_depth': [None, 5, 10]
+}
+
+for outer_train_idx, outer_val_idx in outer_cv.split(X_trainval, y_trainval):
+    # --- Outer split ---
+    X_outer_train = X_trainval.iloc[outer_train_idx].copy()
+    X_outer_val = X_trainval.iloc[outer_val_idx].copy()
+    y_outer_train = y_trainval.iloc[outer_train_idx]
+    y_outer_val = y_trainval.iloc[outer_val_idx]
+
+    # --- FEATURE SELECTION IN OUTER TRAIN ---
+    feat_selector = CorrAndSelect(k=200, corr_threshold=0.9)
+    X_outer_train_sel = feat_selector.fit_transform(X_outer_train, y_outer_train)
+    X_outer_val_sel = feat_selector.transform(X_outer_val)
+    selected_features = feat_selector.features_
+
+    # --- PIPELINE VOOR INNER GRIDSEARCH (ALLEEN HYPERPARAMETERS) ---
+    pipeline = Pipeline([
+        ('scaler', RobustScaler()),
+        ('clf', RandomForestClassifier(random_state=42))
+    ])
+
+    grid_search = GridSearchCV(
+        estimator=pipeline,
+        param_grid=param_grid,
+        cv=inner_cv,
+        scoring='roc_auc',
+        n_jobs=-1
+    )
+    grid_search.fit(X_outer_train_sel, y_outer_train)
+
+    # --- BEST MODEL TOEPASSEN OP OUTER VALIDATION ---
+    best_model = grid_search.best_estimator_
+    y_outer_proba = best_model.predict_proba(X_outer_val_sel)[:,1]
+
+    all_y_outer.extend(y_outer_val)
+    all_y_outer_proba.extend(y_outer_proba)
+
+    fold_auc = roc_auc_score(y_outer_val, y_outer_proba)
+    print(f"Outer fold AUC: {fold_auc:.3f}")
+
+    # Feature importances opslaan
+    importances = best_model.named_steps['clf'].feature_importances_
+    feature_importances_list.append(pd.DataFrame({
+        'feature': selected_features,
+        'importance': importances
+    }))
+
+# %% 5️⃣ EVALUATE NESTED CV
+roc_auc = roc_auc_score(all_y_outer, all_y_outer_proba)
+print(f"Nested CV ROC-AUC: {roc_auc:.3f}")
+
+# %% 6️⃣ FEATURE IMPORTANCE OVER ALLE FOLDS
+feature_importance_df = pd.concat(feature_importances_list)
+feature_importance_mean = feature_importance_df.groupby('feature')['importance'].mean().sort_values(ascending=False)
+
+threshold = 0.01
+interesting_features = feature_importance_mean[feature_importance_mean > threshold]
+print(f"Aantal belangrijke features: {len(interesting_features)}")
+
+import matplotlib.pyplot as plt
+plt.figure(figsize=(10,6))
+plt.barh(feature_importance_mean.index[:20][::-1], feature_importance_mean.values[:20][::-1])
+plt.xlabel('Mean Feature Importance over folds')
+plt.title('Top 20 features RandomForest')
+plt.show()
