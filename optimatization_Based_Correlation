@@ -40,7 +40,7 @@ for outer_train_idx, outer_val_idx in outer_cv.split(X_trainval, y_trainval):
     # -----------------------------
     # 1. CORRELATION FILTER
     # -----------------------------
-    corr_matrix = X_outer_train.corr().abs()
+    corr_matrix = X_outer_train.corr(method='spearman').abs()
     upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
     to_drop = [col for col in upper.columns if any(upper[col] > 0.9)]
     X_outer_train = X_outer_train.drop(columns=to_drop)

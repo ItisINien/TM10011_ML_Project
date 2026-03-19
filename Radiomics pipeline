@@ -18,7 +18,7 @@ class CorrAndSelect(BaseEstimator, TransformerMixin):
     
     def fit(self, X, y):
         # Correlatiefilter
-        corr_matrix = X.corr().abs()
+        corr_matrix = X.corr(method='spearman').abs()
         upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
         self.to_drop_ = [col for col in upper.columns if any(upper[col] > self.corr_threshold)]
         X_filtered = X.drop(columns=self.to_drop_)
