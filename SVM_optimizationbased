@@ -1,0 +1,162 @@
+# %% IMPORTS
+import pandas as pd
+import numpy as np
+from collections import Counter
+from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.pipeline import Pipeline
+from sklearn.model_selection import StratifiedKFold, RandomizedSearchCV, train_test_split
+from sklearn.feature_selection import SelectKBest, f_classif, VarianceThreshold, RFE
+from sklearn.preprocessing import RobustScaler
+from sklearn.svm import SVC
+from sklearn.metrics import roc_auc_score
+from worcliver.load_data import load_data
+
+# %% CUSTOM TRANSFORMER
+class CorrAndSelect(BaseEstimator, TransformerMixin):
+    def __init__(self, k=20, corr_threshold=0.9, optimize=False, estimator=None, n_features_to_select=10):
+        self.k = k
+        self.corr_threshold = corr_threshold
+        self.optimize = optimize
+        self.estimator = estimator
+        self.n_features_to_select = n_features_to_select
+
+    def fit(self, X, y):
+        if not isinstance(X, pd.DataFrame):
+            X = pd.DataFrame(X)
+
+        # 1️⃣ Correlatie filter
+        corr_matrix = X.corr(method='spearman').abs()
+        upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+        self.to_drop_ = [col for col in upper.columns if any(upper[col] > self.corr_threshold)]
+        X_filtered = X.drop(columns=self.to_drop_)
+
+        # 2️⃣ Univariate selectie (ANOVA)
+        self.selector_ = SelectKBest(score_func=f_classif, k=min(self.k, X_filtered.shape[1]))
+        self.selector_.fit(X_filtered, y)
+        X_selected = X_filtered.iloc[:, self.selector_.get_support()]
+
+        # 3️⃣ Optimization-based selectie (RFE)
+        if self.optimize and self.estimator is not None:
+            self.opt_selector_ = RFE(estimator=self.estimator, n_features_to_select=self.n_features_to_select)
+            self.opt_selector_.fit(X_selected, y)
+            self.features_ = X_selected.columns[self.opt_selector_.get_support()]
+        else:
+            self.features_ = X_selected.columns
+
+        return self
+
+    def transform(self, X):
+        if not isinstance(X, pd.DataFrame):
+            X = pd.DataFrame(X)
+        X_filtered = X.drop(columns=self.to_drop_, errors="ignore")
+        X_selected = X_filtered.iloc[:, self.selector_.get_support()]
+
+        if hasattr(self, 'opt_selector_'):
+            X_selected = X_selected.iloc[:, self.opt_selector_.get_support()]
+
+        return X_selected
+
+# %% LOAD DATA
+data = load_data()
+X = data.select_dtypes(include=[np.number])
+y = data['label'].map({'benign': 0, 'malignant': 1})
+
+# %% SPLIT DATA
+X_trainval, X_test, y_trainval, y_test = train_test_split(
+    X, y, test_size=0.2, stratify=y, random_state=42
+)
+
+# %% CV DEFINITIES
+outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+inner_cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
+
+all_y_outer = []
+all_y_outer_proba = []
+features_per_fold = []
+
+# %% OUTER LOOP
+print("Start Nested Cross-Validation...")
+
+for i, (outer_train_idx, outer_val_idx) in enumerate(outer_cv.split(X_trainval, y_trainval)):
+    print(f"\n--- Outer Fold {i+1} ---")
+    
+    X_outer_train = X_trainval.iloc[outer_train_idx].copy()
+    X_outer_val = X_trainval.iloc[outer_val_idx].copy()
+    y_outer_train = y_trainval.iloc[outer_train_idx]
+    y_outer_val = y_trainval.iloc[outer_val_idx]
+
+    # Pipeline
+    pipeline = Pipeline([
+        ('remove_constant', VarianceThreshold(threshold=0)),
+        ('feat_select', CorrAndSelect(
+            k=20, corr_threshold=0.9, 
+            optimize=True,
+            estimator=SVC(kernel='linear', C=1),
+            n_features_to_select=10
+        )),
+        ('scaler', RobustScaler()),
+        ('clf', SVC(kernel='linear', probability=False, random_state=42))
+    ])
+
+    # Hyperparameter space
+    param_dist = {
+        'feat_select__k': [5, 10, 15, 20, 30],
+        'clf__C': [0.1, 1, 10, 100]
+    }
+
+    grid_search = RandomizedSearchCV(
+        estimator=pipeline,
+        param_distributions=param_dist,
+        n_iter=5,
+        cv=inner_cv,
+        scoring='roc_auc',
+        n_jobs=-1,
+        random_state=42,
+        verbose=2
+    )
+
+    grid_search.fit(X_outer_train, y_outer_train)
+
+    best_model = grid_search.best_estimator_
+
+    # Features per fold
+    selected_features = best_model.named_steps['feat_select'].features_.tolist()
+    features_per_fold.append(selected_features)
+
+    # Logging
+    const_filter = best_model.named_steps['remove_constant']
+    fitted_selector = best_model.named_steps['feat_select']
+    
+    n_orig = X_outer_train.shape[1]
+    n_const = sum(const_filter.get_support())
+    n_corr = n_const - len(fitted_selector.to_drop_)
+    
+    print(f"Best Params: {grid_search.best_params_}")
+    print(f"Filter: {n_orig} -> {n_const} (const) -> {n_corr} (corr) -> {len(selected_features)} (k)")
+
+    # Outer validation predictions
+    y_outer_score = best_model.decision_function(X_outer_val)
+    all_y_outer.extend(y_outer_val)
+    all_y_outer_proba.extend(y_outer_score)
+    
+    print(f"Fold AUC: {round(roc_auc_score(y_outer_val, y_outer_score), 3)}")
+
+# %% CONSENSUS FEATURE ANALYSE
+print("\n" + "="*30)
+print("CONSENSUS FEATURE ANALYSE")
+
+all_selected_features = [feat for fold in features_per_fold for feat in fold]
+feature_counts = Counter(all_selected_features)
+
+n_folds = outer_cv.get_n_splits()
+consensus_features = [feat for feat, count in feature_counts.items() if count == n_folds]
+
+print(f"Unieke features gevonden: {len(feature_counts)}")
+print(f"Aantal consensus features (5/5 folds): {len(consensus_features)}")
+if len(consensus_features) == 0:
+    consensus_features = [feat for feat, count in feature_counts.items() if count >= 4]
+    print(f"Geen 5/5 consensus. Features in minstens 4/5 folds: {len(consensus_features)}")
+
+# %% Totale Nested CV AUC
+nested_auc = roc_auc_score(all_y_outer, all_y_outer_proba)
+print(f"\nNested CV Totale AUC: {round(nested_auc, 3)}")
