@@ -1,10 +1,13 @@
 import numpy as np
 import pandas as pd
 from collections import Counter
+from pathlib import Path
+
+import matplotlib.pyplot as plt
 
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.feature_selection import RFE, SelectKBest, f_classif
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_auc_score, roc_curve
 from sklearn.model_selection import (
     RandomizedSearchCV,
     StratifiedKFold,
@@ -16,6 +19,11 @@ from sklearn.preprocessing import RobustScaler
 from sklearn.svm import LinearSVC, SVC
 
 from worcliver.load_data import load_data
+
+try:
+    import shap
+except ImportError:
+    shap = None
 
 
 RANDOM_STATE = 42
@@ -151,6 +159,98 @@ def summarize_feature_stability(features_per_fold, n_folds):
     return feature_counts, consensus_features
 
 
+def run_shap_analysis(final_pipeline, X_trainval, X_test, output_dir="shap_outputs"):
+    if shap is None:
+        print("\nSHAP analysis skipped: package 'shap' is not installed.")
+        print("Install first with: conda install -c conda-forge shap")
+        return
+
+    clf = final_pipeline.named_steps["clf"]
+    if clf.kernel != "linear":
+        print("\nSHAP analysis skipped: current final classifier is not linear.")
+        return
+
+    selector = final_pipeline.named_steps["feat_select"]
+    scaler = final_pipeline.named_steps["scaler"]
+    output_path = Path(output_dir)
+    output_path.mkdir(exist_ok=True)
+
+    # SHAP moet dezelfde geselecteerde features zien als de classifier.
+    train_selected = pd.DataFrame(
+        selector.transform(X_trainval),
+        columns=selector.features_,
+        index=X_trainval.index,
+    )
+    test_selected = pd.DataFrame(
+        selector.transform(X_test),
+        columns=selector.features_,
+        index=X_test.index,
+    )
+
+    # We gebruiken ook dezelfde scaling als in de getrainde pipeline.
+    train_scaled = pd.DataFrame(
+        scaler.transform(train_selected),
+        columns=selector.features_,
+        index=X_trainval.index,
+    )
+    test_scaled = pd.DataFrame(
+        scaler.transform(test_selected),
+        columns=selector.features_,
+        index=X_test.index,
+    )
+
+    # Kleine achtergrondset houdt de SHAP-berekening sneller en stabiel.
+    background_size = min(100, len(train_scaled))
+    background = train_scaled.sample(background_size, random_state=RANDOM_STATE)
+
+    explainer = shap.LinearExplainer(clf, background)
+    shap_values = explainer(test_scaled)
+
+    importance_df = (
+        pd.DataFrame(
+            {
+                "feature": test_scaled.columns,
+                "mean_abs_shap": np.abs(shap_values.values).mean(axis=0),
+            }
+        )
+        .sort_values("mean_abs_shap", ascending=False)
+        .reset_index(drop=True)
+    )
+
+    print("\n" + "=" * 40)
+    print("SHAP mean absolute importance")
+    print(importance_df.to_string(index=False))
+
+    shap.plots.beeswarm(shap_values, max_display=len(test_scaled.columns), show=False)
+    plt.tight_layout()
+    plt.savefig(output_path / "shap_beeswarm.png", dpi=300, bbox_inches="tight")
+    plt.close()
+
+    shap.plots.bar(shap_values, max_display=len(test_scaled.columns), show=False)
+    plt.tight_layout()
+    plt.savefig(output_path / "shap_bar.png", dpi=300, bbox_inches="tight")
+    plt.close()
+
+    print(f"Saved SHAP plots to: {output_path.resolve()}")
+
+
+def save_roc_curve(y_true, y_scores, roc_auc, output_path="roc_curve_final_test.png"):
+    fpr, tpr, _ = roc_curve(y_true, y_scores)
+
+    plt.figure(figsize=(6, 6))
+    plt.plot(fpr, tpr, label=f"ROC curve (AUC = {roc_auc:.3f})", linewidth=2)
+    plt.plot([0, 1], [0, 1], linestyle="--", color="gray", label="Chance")
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
+    plt.title("Final Test ROC Curve")
+    plt.legend(loc="lower right")
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+
+    print(f"Saved ROC curve to: {Path(output_path).resolve()}")
+
+
 def run_nested_cv(X_trainval, y_trainval):
     outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
     inner_cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=RANDOM_STATE)
@@ -161,7 +261,7 @@ def run_nested_cv(X_trainval, y_trainval):
         "feat_select__n_features_to_select": [3, 5, 8, 10],  # Aantal features dat RFE uiteindelijk behoudt.
         "feat_select__rfe_estimator_c": [0.1, 1, 10],  # C-waarde van de lineaire SVM binnen RFE. LageS C geeft meer robuust model, hoge C zo min mogelijk fouten
         "clf__kernel": ["linear", "rbf"],  # Type scheidingsgrens van de uiteindelijke SVM.
-        "clf__C": [0.1, 1, 10, 100],  # Stuurt de balans tussen regularisatie en trainingsfouten.
+        "clf__C": [0.1, 1, 10, 100],  # Stuurt de balans tussen regularisatie en trainingsfouten. Hoge C geeft SVM kans complexere grens om fouten te verminderen, lage C accepteerd SVM met meer fouten maar vermindert overfitting
         "clf__gamma": ["scale", 0.1, 0.01, 0.001],  # Relevante instelling voor o.a. de RBF-kernel; bepaalt hoe lokaal de invloed van punten is.
     }
 
@@ -277,11 +377,18 @@ def main():
     test_auc = roc_auc_score(y_test, test_scores)
 
     final_selected_features = final_pipeline.named_steps["feat_select"].features_
+    final_univariate_features = (
+        final_pipeline.named_steps["feat_select"].univariate_features_
+    )
 
     print("\n" + "=" * 40)
     print(f"Final test ROC-AUC: {test_auc:.3f}")
+    print(f"Final univariate features ({len(final_univariate_features)}):")
+    print(final_univariate_features)
     print(f"Final selected features ({len(final_selected_features)}):")
     print(final_selected_features)
+    save_roc_curve(y_test, test_scores, test_auc)
+    run_shap_analysis(final_pipeline, X_trainval, X_test)
 
 if __name__ == "__main__":
     main()
