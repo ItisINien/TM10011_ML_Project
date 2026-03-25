@@ -22,7 +22,7 @@ except ImportError:
     shap = None
 
 
-RANDOM_STATE = 40
+RANDOM_STATE = 42
 
 
 class CorrUnivariateOptimizationSelector(BaseEstimator, TransformerMixin):
