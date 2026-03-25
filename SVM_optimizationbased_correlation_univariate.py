@@ -4,7 +4,7 @@ from collections import Counter
 from pathlib import Path
 import matplotlib.pyplot as plt
 from sklearn.base import BaseEstimator, TransformerMixin
-from sklearn.feature_selection import RFE, SelectKBest, f_classif
+from sklearn.feature_selection import SelectKBest, f_classif
 from sklearn.metrics import roc_auc_score, roc_curve
 from sklearn.model_selection import (
     RandomizedSearchCV,
@@ -14,7 +14,7 @@ from sklearn.model_selection import (
 )
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import RobustScaler
-from sklearn.svm import LinearSVC, SVC
+from sklearn.svm import SVC
 from worcliver.load_data import load_data
 try:
     import shap
@@ -25,20 +25,18 @@ except ImportError:
 RANDOM_STATE = 42
 
 
-class CorrUnivariateOptimizationSelector(BaseEstimator, TransformerMixin):
+class CorrUnivariateSelector(BaseEstimator, TransformerMixin):
     def __init__(
         self,
         corr_threshold=0.9,
         k_univariate=20,
-        n_features_to_select=5,
-        rfe_estimator_c=1.0,
-        rfe_step=1,
+        consensus_n_splits=5,
+        consensus_min_fraction=0.6,
     ):
         self.corr_threshold = corr_threshold
         self.k_univariate = k_univariate
-        self.n_features_to_select = n_features_to_select
-        self.rfe_estimator_c = rfe_estimator_c
-        self.rfe_step = rfe_step
+        self.consensus_n_splits = consensus_n_splits
+        self.consensus_min_fraction = consensus_min_fraction
 
     def _to_dataframe(self, X):
         if isinstance(X, pd.DataFrame):
@@ -49,61 +47,97 @@ class CorrUnivariateOptimizationSelector(BaseEstimator, TransformerMixin):
 
         return pd.DataFrame(X)
 
-    def fit(self, X, y):
-        X_df = self._to_dataframe(X)
-        self.feature_names_in_ = X_df.columns.to_list()
-
+    def _select_features_once(self, X_df, y):
         constant_mask = X_df.nunique(dropna=False) <= 1
-        self.constant_features_ = X_df.columns[constant_mask].to_list()
-        X_non_constant = X_df.drop(columns=self.constant_features_, errors="ignore")
+        constant_features = X_df.columns[constant_mask].to_list()
+        X_non_constant = X_df.drop(columns=constant_features, errors="ignore")
+
+        if X_non_constant.shape[1] == 0:
+            return [], constant_features, []
 
         corr_matrix = X_non_constant.corr(method="spearman").abs().fillna(0)
         upper = corr_matrix.where(
             np.triu(np.ones(corr_matrix.shape), k=1).astype(bool)
         )
-        self.correlation_features_ = [
+        correlation_features = [
             col for col in upper.columns if any(upper[col] > self.corr_threshold)
         ]
-        X_corr = X_non_constant.drop(columns=self.correlation_features_, errors="ignore")
+        X_corr = X_non_constant.drop(columns=correlation_features, errors="ignore")
 
         if X_corr.shape[1] == 0:
-            raise ValueError("No features left after constant and correlation filtering.")
+            return [], constant_features, correlation_features
 
         k = min(self.k_univariate, X_corr.shape[1])
-        self.univariate_selector_ = SelectKBest(score_func=f_classif, k=k)
-        self.univariate_selector_.fit(X_corr, y)
+        selector = SelectKBest(score_func=f_classif, k=k)
+        selector.fit(X_corr, y)
+        selected_features = X_corr.columns[selector.get_support()].to_list()
+        return selected_features, constant_features, correlation_features
 
-        self.univariate_features_ = X_corr.columns[
-            self.univariate_selector_.get_support()
-        ].to_list()
-        X_uni = X_corr[self.univariate_features_]
+    def fit(self, X, y):
+        X_df = self._to_dataframe(X)
+        self.feature_names_in_ = X_df.columns.to_list()
 
-        n_rfe = min(self.n_features_to_select, X_uni.shape[1])
-        if n_rfe == 0:
-            raise ValueError("No features left for optimization-based feature selection.")
+        y_series = pd.Series(y, index=X_df.index)
+        final_features, constant_features, correlation_features = self._select_features_once(
+            X_df, y_series
+        )
+        self.constant_features_ = constant_features
+        self.correlation_features_ = correlation_features
+        self.univariate_features_ = final_features.copy()
 
-        self.rfe_estimator_ = LinearSVC(
-            C=self.rfe_estimator_c,
-            dual=False,
-            max_iter=10000,  # Hoge bovengrens om convergence warnings te voorkomen.
+        if len(final_features) == 0:
+            raise ValueError("No features left after constant, correlation, and univariate filtering.")
+
+        consensus_cv = StratifiedKFold(
+            n_splits=self.consensus_n_splits,
+            shuffle=True,
             random_state=RANDOM_STATE,
         )
-        self.rfe_selector_ = RFE(
-            estimator=self.rfe_estimator_,  # RFE verwijdert stapsgewijs de minst belangrijke features.
-            n_features_to_select=n_rfe,
-            step=self.rfe_step,
-        )
-        self.rfe_selector_.fit(X_uni, y)
 
-        self.features_ = X_uni.columns[self.rfe_selector_.get_support()].to_list()
+        features_per_consensus_fold = []
+        for train_idx, _ in consensus_cv.split(X_df, y_series):
+            X_fold = X_df.iloc[train_idx]
+            y_fold = y_series.iloc[train_idx]
+            fold_features, _, _ = self._select_features_once(X_fold, y_fold)
+            if fold_features:
+                features_per_consensus_fold.append(fold_features)
+
+        if not features_per_consensus_fold:
+            self.features_ = final_features.copy()
+            self.consensus_feature_counts_ = Counter(final_features)
+            return self
+
+        feature_counts = Counter(
+            feature
+            for fold_features in features_per_consensus_fold
+            for feature in fold_features
+        )
+        min_count = max(
+            1,
+            int(np.ceil(self.consensus_min_fraction * len(features_per_consensus_fold))),
+        )
+        consensus_features = [
+            feature for feature, count in feature_counts.items() if count >= min_count
+        ]
+
+        if not consensus_features:
+            consensus_features = [
+                feature
+                for feature, _ in feature_counts.most_common(min(len(final_features), 10))
+            ]
+
+        ordered_consensus = [
+            feature for feature in final_features if feature in set(consensus_features)
+        ]
+        self.features_ = ordered_consensus if ordered_consensus else final_features.copy()
+        self.consensus_feature_counts_ = feature_counts
+        self.consensus_min_count_ = min_count
+        self.consensus_features_per_fold_ = features_per_consensus_fold
         return self
 
     def transform(self, X):
         X_df = self._to_dataframe(X)
-        X_non_constant = X_df.drop(columns=self.constant_features_, errors="ignore")
-        X_corr = X_non_constant.drop(columns=self.correlation_features_, errors="ignore")
-        X_uni = X_corr[self.univariate_features_]
-        return X_uni[self.features_]
+        return X_df[self.features_]
 
 
 def build_pipeline():
@@ -111,15 +145,15 @@ def build_pipeline():
         [
             (
                 "feat_select",
-                CorrUnivariateOptimizationSelector(
+                CorrUnivariateSelector(
                     corr_threshold=0.9,
                     k_univariate=20,
-                    n_features_to_select=5,
-                    rfe_estimator_c=1.0,
+                    consensus_n_splits=5,
+                    consensus_min_fraction=0.6,
                 ),
             ),
             ("scaler", RobustScaler()),
-            ("clf", SVC()),
+            ("clf", SVC(kernel="linear")),
         ]
     )
 
@@ -253,12 +287,9 @@ def run_nested_cv(X_trainval, y_trainval):
 
     param_dist = {
         "feat_select__corr_threshold": [0.8, 0.85, 0.9],  # Drempel voor wanneer twee features te sterk correleren.
-        "feat_select__k_univariate": [10, 15, 20, 30],  # Aantal features dat na ANOVA univariate selectie overblijft.
-        "feat_select__n_features_to_select": [3, 5, 8, 10],  # Aantal features dat RFE uiteindelijk behoudt.
-        "feat_select__rfe_estimator_c": [0.1, 1, 10],  # C-waarde van de lineaire SVM binnen RFE. LageS C geeft meer robuust model, hoge C zo min mogelijk fouten
-        "clf__kernel": ["linear", "rbf"],  # Type scheidingsgrens van de uiteindelijke SVM.
-        "clf__C": [0.1, 1, 10, 100],  # Stuurt de balans tussen regularisatie en trainingsfouten. Hoge C geeft SVM kans complexere grens om fouten te verminderen, lage C accepteerd SVM met meer fouten maar vermindert overfitting
-        "clf__gamma": ["scale", 0.1, 0.01, 0.001],  # Relevante instelling voor o.a. de RBF-kernel; bepaalt hoe lokaal de invloed van punten is.
+        "feat_select__k_univariate": [10, 15],  # Aantal features dat na ANOVA univariate selectie overblijft.
+        "feat_select__consensus_min_fraction": [0.6, 0.8],  # Alleen features behouden die in meerdere consensus-folds terugkomen.
+        "clf__C": [0.01, 0.1, 1, 10],  # Lage tot matig hoge C houdt regularisatie aanwezig, maar geeft iets meer ruimte dan de strengste setting.
     }
 
     all_y_outer = []
@@ -306,7 +337,7 @@ def run_nested_cv(X_trainval, y_trainval):
             f"{X_outer_train.shape[1] - len(selector.constant_features_)} (after constant) -> "
             f"{X_outer_train.shape[1] - len(selector.constant_features_) - len(selector.correlation_features_)} (after correlation) -> "
             f"{len(selector.univariate_features_)} (after univariate) -> "
-            f"{len(selector.features_)} (after optimization)"
+            f"{len(selector.features_)} (after consensus)"
         )
         print(f"Selected features: {selector.features_}")
         print(
