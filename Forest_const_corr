@@ -12,7 +12,7 @@ from worcliver.load_data import load_data
 import shap
 from sklearn.metrics import make_scorer, fbeta_score
 from sklearn.metrics import roc_curve, auc
-
+from collections import Counter
 
 # %% 1️⃣ CUSTOM TRANSFORMER VOOR CORR + SELECTK
 class CorrAndSelect(BaseEstimator, TransformerMixin):
@@ -20,7 +20,7 @@ class CorrAndSelect(BaseEstimator, TransformerMixin):
         # self.k = k
         self.corr_threshold = corr_threshold
     
-    def fit(self, X):
+    def fit(self, X, y):
         if not isinstance(X, pd.DataFrame):
             X = pd.DataFrame(X, columns=[f"f{i}" for i in range(X.shape[1])])
 
@@ -72,6 +72,7 @@ all_y_outer = []
 all_y_outer_proba = []
 
 feature_importances_list = []
+best_params_list = []
 
 
 for outer_train_idx, outer_val_idx in outer_cv.split(X_trainval, y_trainval):
@@ -90,7 +91,6 @@ for outer_train_idx, outer_val_idx in outer_cv.split(X_trainval, y_trainval):
     #'feat_select__k': [50, 100, 150, 200, 250],  # nu een hyperparameter
 
     param_dist = {
-    "clf__min_samples_leaf": [1,2,4],
     'clf__n_estimators': [100, 200, 300, 500],
     'clf__max_depth': [None, 5, 10, 20],
     'clf__min_samples_split': [2, 5, 10]
@@ -100,12 +100,15 @@ for outer_train_idx, outer_val_idx in outer_cv.split(X_trainval, y_trainval):
     grid_search = RandomizedSearchCV(
         estimator=pipeline,
         param_distributions=param_dist,
-        n_iter=100,           # Hij probeert nu maar 30 willekeurige combinaties per inner fold
+        n_iter=200,           
         cv=inner_cv,
         scoring=f2_scorer,
         n_jobs=-1,
         random_state=42)
+    
     grid_search.fit(X_outer_train, y_outer_train)
+
+    best_params_list.append(grid_search.best_params_)
 
     print(f"Outer fold best params: {grid_search.best_params_}")
     print(f"Outer fold best inner CV ROC-AUC: {grid_search.best_score_:.3f}")
@@ -170,29 +173,48 @@ plt.xlabel('Mean Feature Importance over folds')
 plt.title('Top 20 features RandomForest')
 plt.show()
 
-# %%
+# %% 7️⃣ FINAL MODEL MET BESTE HYPERPARAMETERS VAN NESTED CV
+
+# 1️⃣ Kies de beste hyperparameters van de outer folds
+best_params = grid_search.best_params_
+
+final_params = {}
+for param in best_params_list[0].keys():
+    values = [p[param] for p in best_params_list]
+    final_params[param] = Counter(values).most_common(1)[0][0]
+
+print("Consensus hyperparameters over alle outer folds:")
+print(final_params)
+
+# 2️⃣ Maak final pipeline met dezelfde CorrAndSelect config en beste RF params
 pipeline_final = Pipeline([
-    ('feat_select', CorrAndSelect( corr_threshold=0.9)),
+    ('feat_select', CorrAndSelect(corr_threshold=0.9)),
     ('scaler', RobustScaler()),
     ('clf', RandomForestClassifier(
-        n_estimators=200,
-        max_depth=5,
-        min_samples_split=5,
-        random_state=42))
+        n_estimators=final_params['clf__n_estimators'],
+        max_depth=final_params['clf__max_depth'],
+        min_samples_split=final_params['clf__min_samples_split'],
+        random_state=42
+    ))
 ])
 
+# 3️⃣ Fit pipeline op volledige trainval set
 pipeline_final.fit(X_trainval, y_trainval)
-y_test_proba = pipeline_final.predict_proba(X_test)[:,1]
+
+# 4️⃣ Transformeer test set en predict proba
+X_test_transformed = pipeline_final.named_steps['feat_select'].transform(X_test)
+y_test_proba = pipeline_final.named_steps['clf'].predict_proba(X_test_transformed)[:,1]
+
+# 5️⃣ Test ROC-AUC
 test_auc = roc_auc_score(y_test, y_test_proba)
 print(f"Test ROC-AUC: {test_auc:.3f}")
 
-# Bereken ROC-curve
+# 6️⃣ Plot ROC-curve
 fpr, tpr, thresholds = roc_curve(y_test, y_test_proba)
-roc_auc = auc(fpr, tpr)
+roc_auc_val = auc(fpr, tpr)
 
-# Plot ROC-curve
 plt.figure(figsize=(8,6))
-plt.plot(fpr, tpr, color='blue', lw=2, label=f'ROC curve (AUC = {roc_auc:.3f})')
+plt.plot(fpr, tpr, color='blue', lw=2, label=f'ROC curve (AUC = {roc_auc_val:.3f})')
 plt.plot([0, 1], [0, 1], color='gray', lw=1, linestyle='--', label='Random guess')
 plt.xlim([0.0, 1.0])
 plt.ylim([0.0, 1.05])
@@ -203,44 +225,31 @@ plt.legend(loc='lower right')
 plt.grid(True)
 plt.show()
 
-# %%
-# Transformeer features zoals gebruikt in model
-X_model = best_model.named_steps['feat_select'].transform(X_outer_train)
-X_model = pd.DataFrame(X_model, columns=best_model.named_steps['feat_select'].features_)
+# 7️⃣ SHAP ANALYSE OP FINAL MODEL
+X_model = pipeline_final.named_steps['feat_select'].transform(X_trainval)
+X_model = pd.DataFrame(X_model, columns=pipeline_final.named_steps['feat_select'].features_)
 
-explainer = shap.TreeExplainer(best_model.named_steps['clf'])
+explainer = shap.TreeExplainer(pipeline_final.named_steps['clf'])
 shap_values = explainer.shap_values(X_model)
 
-# Handle different SHAP output formats
+# SHAP array correct afhandelen
 if isinstance(shap_values, list):
-    # Older SHAP: list of arrays per class → take class 1
     shap_vals = np.array(shap_values[1])
 elif shap_values.ndim == 3:
-    # Newer SHAP: (n_samples, n_features, n_classes) → take class 1
     shap_vals = shap_values[:, :, 1]
 else:
     shap_vals = shap_values
 
-print("SHAP array shape:", shap_vals.shape)  # Should be (n_samples, n_features)
-
-
-# Gemiddelde absolute SHAP per feature → 1D
 mean_abs_shap = np.abs(shap_vals).mean(axis=0)
-
-# Controleer dat het aantal features klopt
 assert mean_abs_shap.shape[0] == X_model.shape[1], \
     f"Feature mismatch: {mean_abs_shap.shape[0]} vs {X_model.shape[1]}"
 
-# DataFrame maken en sorteren
 shap_importance = pd.DataFrame({
     "feature": X_model.columns,
     "mean_abs_shap": mean_abs_shap
 }).sort_values(by="mean_abs_shap", ascending=False)
 
-# Print top 20
-print(shap_importance.head(20))
-
-# Plot top 20
+# Top 20 SHAP features plotten
 plt.figure(figsize=(10,6))
 plt.barh(shap_importance.head(20).feature[::-1], 
          shap_importance.head(20).mean_abs_shap[::-1])
@@ -248,9 +257,7 @@ plt.xlabel("Mean Absolute SHAP Value")
 plt.title("Top 20 SHAP Feature Importance")
 plt.show()
 
-# %%
-# Print gekozen hyperparameters van de RandomForest in deze fold
-clf_params = best_model.named_steps['clf'].get_params()
-print("\nGekozen hyperparameters RandomForest:")
-for param, value in clf_params.items():
+# 8️⃣ Print gekozen hyperparameters
+print("\nGekozen hyperparameters RandomForest final model:")
+for param, value in pipeline_final.named_steps['clf'].get_params().items():
     print(f"{param}: {value}")
