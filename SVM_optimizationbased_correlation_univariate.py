@@ -2,9 +2,7 @@ import numpy as np
 import pandas as pd
 from collections import Counter
 from pathlib import Path
-
 import matplotlib.pyplot as plt
-
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.feature_selection import RFE, SelectKBest, f_classif
 from sklearn.metrics import roc_auc_score, roc_curve
@@ -17,16 +15,14 @@ from sklearn.model_selection import (
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import RobustScaler
 from sklearn.svm import LinearSVC, SVC
-
 from worcliver.load_data import load_data
-
 try:
     import shap
 except ImportError:
     shap = None
 
 
-RANDOM_STATE = 42
+RANDOM_STATE = 40
 
 
 class CorrUnivariateOptimizationSelector(BaseEstimator, TransformerMixin):
