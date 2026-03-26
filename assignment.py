@@ -1,112 +1,195 @@
-
-
-
-# proberen
-from worcliver.load_data import load_data
+# %% Importeren
 import pandas as pd
 import numpy as np
+from collections import Counter
+from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.pipeline import Pipeline
+from sklearn.model_selection import StratifiedKFold, RandomizedSearchCV, train_test_split
+from sklearn.feature_selection import SelectKBest, f_classif, VarianceThreshold
 from sklearn.preprocessing import RobustScaler
-
-data = load_data() # Laad de dataset
-
-# %% Outlier detectie met Z-scores
-numeric_cols = data.select_dtypes(include=[np.number])
-z_scores = (numeric_cols - numeric_cols.mean()) / numeric_cols.std() # Bereken Z-scores om outliers te identificeren
-outliers = numeric_cols[(np.abs(z_scores) > 3).any(axis=1)] # Zoek outliers: rijen met minstens één Z-score > 3 of < -3
-print(f"Aantal rijen met outliers: {len(outliers)}")
-outlier_values = (np.abs(z_scores) > 3).sum().sum()
-print(f"Aantal outlier waarden: {outlier_values}")
-total_values = numeric_cols.size
-percentage_outliers = (outlier_values / total_values) * 100 # Percentage
-print(f"Procent outlier waarden: {percentage_outliers}")
-
-# %% Schalen van de numerieke kolommen met RobustScaler
-numeric_cols = data.select_dtypes(include=[np.number]) # Selecteer alleen de numerieke kolommen 
-scaler = RobustScaler() # Initialiseer de RobustScaler
-scaled_values = scaler.fit_transform(numeric_cols) # Pas de scaler toe op de numerieke kolommen
-data_scaled = pd.DataFrame(scaled_values, columns=numeric_cols.columns, index=numeric_cols.index) # Maak een nieuwe DataFrame met de geschaalde waarden en behoud de originele index en kolomnamen
-print(data_scaled.head())
-
-# Scalen check; Visualisatie van het effect van RobustScaler op één feature
-import matplotlib.pyplot as plt
-import seaborn as sns
-
-feature_naam = numeric_cols.columns[0] # kiezen één feature om het effect te laten zien, kunt hier elke kolomnaam invullen
-fig, axes = plt.subplots(1, 2, figsize=(15, 6)) # Maak een figuur met twee subplots (1 rij, 2 kolommen)
-
-sns.boxplot(data=numeric_cols[feature_naam], ax=axes[0], color='skyblue') # 1. Boxplot VOOR schalen
-axes[0].set_title(f'VOOR RobustScaling\n({feature_naam})')
-axes[0].set_ylabel('Originele Waarde')
-
-sns.boxplot(data=data_scaled[feature_naam], ax=axes[1], color='lightgreen') # 2. Boxplot NA schalen
-axes[1].set_title(f'NA RobustScaling\n({feature_naam})')
-axes[1].set_ylabel('Geschaalde Waarde (Mediaan = 0)')
-
-plt.tight_layout()
-plt.show()
-
-# %% Stratified K-Fold
-from sklearn.model_selection import StratifiedKFold
-X = data_scaled # Gebruik de geschaalde data als features
-y = data['label'] # Colom van benigne/maligne selecteren 
-skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42) # n_splits=5 -> 5 groepen, shuffle=True -> willekeurige verdeling, random_state=42 -> reproduceerbaar
-print(skf)
-
-# K-fold check; verdeling controleren per fold
-
-print("Totale dataset verdeling:") # Bekijk eerst de verdeling in je totale dataset (y)
-print(y.value_counts(normalize=True) * 100)
-print("-" * 30)
-
-for i, (train_index, test_index) in enumerate(skf.split(X, y)): # 2. Loop door de 5 folds om de test-set van elke fold te checken
-    y_test_fold = y.iloc[test_index]    # Pak de labels van de patiënten in de huidige test-fold
-    percentages = y_test_fold.value_counts(normalize=True) * 100    # Bereken de percentages (bijv. hoeveel % is maligne)
-    print(f"Fold {i+1}:")
-    print(f"  Aantal patiënten: {len(y_test_fold)}")
-    print(f"  Verdeling per klasse (%):")
-    print(percentages)
-    print("-" * 30)
+from sklearn.svm import SVC
+from sklearn.metrics import roc_auc_score
+from worcliver.load_data import load_data
+from sklearn.feature_selection import RFE
 
 
-# %% Feature selectie
-from sklearn.feature_selection import SelectKBest, f_classif
-
-scores = []# We maken een lijstje om de resultaten per fold in op te slaan
-features_per_fold = [] # We maken een lijstje om de gekozen features per fold in op te slaan, zodat we later kunnen vergelijken welke features in meerdere folds voorkomen
-
-for i, (train_index, test_index) in enumerate(skf.split(X, y)):# Hier begint de loop door de 5 folds
-
-    X_train, X_test = X.iloc[train_index], X.iloc[test_index] # data slipsten dus train: 4 folds en Test: 1 fold
-    y_train, y_test = y.iloc[train_index], y.iloc[test_index]
+# %% CUSTOM TRANSFORMER
+class CorrAndSelect(BaseEstimator, TransformerMixin):
+    def __init__(self, k=20, corr_threshold=0.9):
+        self.k = k
+        self.corr_threshold = corr_threshold
     
-    selector = SelectKBest(score_func=f_classif, k=20) # Feature selectie met de ANOVA F-test, kies de top 10 features
-    X_train_selected = selector.fit_transform(X_train, y_train)
+        
+    def fit(self, X, y):
+        # Stap 0: Zorg dat X een DataFrame is (nodig na VarianceThreshold)
+        if not isinstance(X, pd.DataFrame):
+            X = pd.DataFrame(X)
+
+        # Stap 1: Correlatie filter (Spearman)
+        corr_matrix = X.corr(method='spearman').abs()
+        upper = corr_matrix.where(
+            np.triu(np.ones(corr_matrix.shape), k=1).astype(bool)
+        )
+
+        self.to_drop_ = [
+            col for col in upper.columns
+            if any(upper[col] > self.corr_threshold)
+        ]
+
+        X_filtered = X.drop(columns=self.to_drop_)
+
+        # Stap 2: Univariate selection (ANOVA)
+        self.selector_ = SelectKBest(
+            score_func=f_classif,
+            k=min(self.k, X_filtered.shape[1])
+        )
+
+        self.selector_.fit(X_filtered, y)
+        self.features_ = X_filtered.columns[self.selector_.get_support()]
+        return self
+
+    def transform(self, X):
+        if not isinstance(X, pd.DataFrame):
+            X = pd.DataFrame(X)
+            
+        X_filtered = X.drop(columns=self.to_drop_, errors="ignore")
+        # We selecteren alleen de kolommen die in 'fit' zijn gekozen
+        return X_filtered[self.features_]
+
+# %% 2️⃣ LOAD DATA
+data = load_data()
+X = data.select_dtypes(include=[np.number])
+y = data['label'].map({'benign': 0, 'malignant': 1})
+
+# %% SPLIT DATA
+X_trainval, X_test, y_trainval, y_test = train_test_split(
+    X, y,
+    test_size=0.2,
+    stratify=y,
+    random_state=42
+)
+
+# %% CV DEFINITIES
+outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+inner_cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
+
+all_y_outer = []
+all_y_outer_proba = []
+features_per_fold = [] # <--- CRUCIAAL: Hier buiten de loop initialiseren
+
+# %% OUTER LOOP
+print("Start Nested Cross-Validation...")
+
+for i, (outer_train_idx, outer_val_idx) in enumerate(outer_cv.split(X_trainval, y_trainval)):
+    print(f"\n--- Outer Fold {i+1} ---")
     
-    X_test_selected = selector.transform(X_test)   # Pas dezelfde selectie (dezelfde kolommen) toe op de testset
+    X_outer_train = X_trainval.iloc[outer_train_idx].copy()
+    X_outer_val = X_trainval.iloc[outer_val_idx].copy()
+    y_outer_train = y_trainval.iloc[outer_train_idx]
+    y_outer_val = y_trainval.iloc[outer_val_idx]
 
-    cols = selector.get_support(indices=True)   # Controle Welke features zijn gekozen in deze fold?
-    features_in_fold = X.columns[cols] # Pak de namen van de gekozen features in deze fold
-    features_per_fold.append(set(features_in_fold)) # Sla de gekozen features van deze fold op in een lijst (set) om later te vergelijken tussen folds
+    # Pipeline opbouw
+    pipeline = Pipeline([
+        ('remove_constant', VarianceThreshold(threshold=0)),
+        ('feat_select', CorrAndSelect(k=20, corr_threshold=0.9)),
+        ('scaler', RobustScaler()),
+        ('clf', SVC(kernel='linear', 
+                    probability=True, 
+                    random_state=42 
+                   ))
+    ])
 
+    # Zoekruimte (Lage k voor meer kans op consensus/stabiliteit)
+    param_dist = {
+        'feat_select__k': [5, 10, 15, 20, 30], 
+        'clf__C': [0.1, 1, 10, 100],
+        'clf__gamma': ['scale', 0.001, 0.01]
+    }
+
+    grid_search = RandomizedSearchCV(
+        estimator=pipeline,
+        param_distributions=param_dist,
+        n_iter=20,
+        cv=inner_cv,
+        scoring='roc_auc',
+        n_jobs=-1,
+        random_state=42
+    )
+
+    grid_search.fit(X_outer_train, y_outer_train)
+
+    # 1. Best estimator pakken
+    best_model = grid_search.best_estimator_
     
-    print(f"FOLD {i+1}:") # print welke fold we aan het trainen zijn
-    print(f"  Training op {len(X_train)} patiënten, testen op {len(X_test)}") # print aantal patiënten in train en test van deze fold
-    print(f"  Top feature in deze fold: {features_in_fold[0]}") # print de beste feature van deze fold, vrij nutteloos maar prima
-    print("-" * 30) 
+    # 2. Features van deze fold opslaan in de lijst
+    selected_features = best_model.named_steps['feat_select'].features_.tolist()
+    features_per_fold.append(selected_features)
 
- 
-    p_waarden_alle = selector.pvalues_ # p-waarden check; Bekijk de p-waarden van de geselecteerde features per fold
-    p_waarden_top10 = p_waarden_alle[cols] # Pak alleen de p-waarden van de 10 gekozen features
+    # 3. Logging van filters
+    const_filter = best_model.named_steps['remove_constant']
+    fitted_selector = best_model.named_steps['feat_select']
     
-    print(f"--- SIGNIFICANTIE CHECK FOLD {i+1} ---") # Print het overzicht voor deze fold
-    for naam, p in zip(features_in_fold, p_waarden_top10): # Loop door de gekozen features en hun p-waarden, print ze netjes uit
-        status = "SIG" if p < 0.05 else "NIET SIG"
-        print(f"Feature: {naam[:30]:<30} | p-waarde: {p:.5f} | {status}")
-    print("-" * 30)
+    n_orig = X_outer_train.shape[1]
+    n_const = sum(const_filter.get_support())
+    n_corr = n_const - len(fitted_selector.to_drop_)
+    
+    print(f"Best Params: {grid_search.best_params_}")
+    print(f"Filter: {n_orig} -> {n_const} (const) -> {n_corr} (corr) -> {len(selected_features)} (k)")
 
-stabiele_features = set.intersection(*features_per_fold) # Bekijk welke features in alle 5 folds in de top 10 staan
+    # 4. Voorspellen op outer validation set
+    y_outer_proba = best_model.predict_proba(X_outer_val)[:, 1]
+    all_y_outer.extend(y_outer_val)
+    all_y_outer_proba.extend(y_outer_proba)
+    
+    print(f"Fold AUC: {round(roc_auc_score(y_outer_val, y_outer_proba), 3)}")
 
-print(f"Aantal features in alle 5 folds: {len(stabiele_features)}")
-print(list(stabiele_features))
+# %% CONSENSUS ANALYSE
+print("\n" + "="*30)
+print("CONSENSUS FEATURE ANALYSE")
 
+# Tel hoe vaak elke feature over de 5 folds is gekozen
+all_selected_features = [feat for fold in features_per_fold for feat in fold]
+feature_counts = Counter(all_selected_features)
 
+# Zoek features die in ALLE 5 folds zitten
+n_folds = outer_cv.get_n_splits()
+consensus_features = [feat for feat, count in feature_counts.items() if count == n_folds]
+
+print(f"Unieke features gevonden: {len(feature_counts)}")
+print(f"Aantal consensus features (5/5 folds): {len(consensus_features)}")
+if len(consensus_features) > 0:
+    print(f"Stabiele features: {consensus_features}")
+else:
+    # Als er geen 5/5 zijn, kijk naar 4/5
+    consensus_4 = [feat for feat, count in feature_counts.items() if count >= 4]
+    print(f"Geen 5/5 consensus. Features in minstens 4/5 folds: {len(consensus_4)}")
+    consensus_features = consensus_4 # Gebruik deze voor het finale model
+
+# %% FINALE EVALUATIE
+nested_auc = roc_auc_score(all_y_outer, all_y_outer_proba)
+print(f"\nNested CV Totale AUC: {round(nested_auc, 3)}")
+
+# %% FINALE TRAINING OP STABIELE FEATURES
+# if len(consensus_features) > 0:
+#     # Omdat consensus_features nu indices zijn (bijv. 18, 25), 
+#     # moeten we de namen uit de originele X ophalen
+#     orig_feature_names = X_trainval.columns
+#     stable_feature_names = orig_feature_names[consensus_features]
+
+#     print(f"Stabiele feature namen: {stable_feature_names.tolist()}")
+
+#     # Selecteer de data
+#     X_trainval_stable = X_trainval[stable_feature_names]
+#     X_test_stable = X_test[stable_feature_names]
+
+#     final_model = Pipeline([
+#         ('scaler', RobustScaler()),
+#         ('clf', SVC(kernel='rbf', probability=True, random_state=42))
+#     ])
+
+#     final_model.fit(X_trainval_stable, y_trainval)
+#     test_proba = final_model.predict_proba(X_test_stable)[:, 1]
+    
+#     print(f"Uiteindelijke Test AUC (met {len(consensus_features)} features): {round(roc_auc_score(y_test, test_proba), 3)}")
+# else:
+#     print("Geen stabiele features gevonden.")
