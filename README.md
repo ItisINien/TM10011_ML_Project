@@ -5,8 +5,5 @@ Clone the projectgit and select your group dataset
 "clone https://github.com/jveenland/TM10011_ML_Project.git"
 NB: for the ECG dataset, please unzip the file 'ecg.zip' before loading it.
 
-top werkt dit?
+Hi, welcome to the repository of group 2. 
 
-nu mergen met main
-
-laatste check voor merge
