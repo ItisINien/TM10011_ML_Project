@@ -4,17 +4,16 @@ from collections import Counter
 from pathlib import Path
 import matplotlib.pyplot as plt
 from sklearn.base import BaseEstimator, TransformerMixin
-from sklearn.feature_selection import SelectKBest, f_classif
+from sklearn.feature_selection import RFE, SelectKBest, f_classif
 from sklearn.metrics import roc_auc_score, roc_curve
 from sklearn.model_selection import (
     RandomizedSearchCV,
     StratifiedKFold,
-    cross_val_score,
     train_test_split,
 )
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import RobustScaler
-from sklearn.svm import SVC
+from sklearn.svm import LinearSVC, SVC
 from worcliver.load_data import load_data
 try:
     import shap
@@ -23,20 +22,23 @@ except ImportError:
 
 
 RANDOM_STATE = 42
+N_JOBS = 1
 
 
-class CorrUnivariateSelector(BaseEstimator, TransformerMixin):
+class CorrUnivariateOptimizationSelector(BaseEstimator, TransformerMixin):
     def __init__(
         self,
         corr_threshold=0.9,
         k_univariate=20,
-        consensus_n_splits=5,
-        consensus_min_fraction=0.6,
+        n_features_to_select=5,
+        rfe_estimator_c=1.0,
+        rfe_step=1,
     ):
         self.corr_threshold = corr_threshold
         self.k_univariate = k_univariate
-        self.consensus_n_splits = consensus_n_splits
-        self.consensus_min_fraction = consensus_min_fraction
+        self.n_features_to_select = n_features_to_select
+        self.rfe_estimator_c = rfe_estimator_c
+        self.rfe_step = rfe_step
 
     def _to_dataframe(self, X):
         if isinstance(X, pd.DataFrame):
@@ -47,97 +49,60 @@ class CorrUnivariateSelector(BaseEstimator, TransformerMixin):
 
         return pd.DataFrame(X)
 
-    def _select_features_once(self, X_df, y):
+    def fit(self, X, y):
+        X_df = self._to_dataframe(X)
+        self.feature_names_in_ = X_df.columns.to_list()
         constant_mask = X_df.nunique(dropna=False) <= 1
-        constant_features = X_df.columns[constant_mask].to_list()
-        X_non_constant = X_df.drop(columns=constant_features, errors="ignore")
-
-        if X_non_constant.shape[1] == 0:
-            return [], constant_features, []
+        self.constant_features_ = X_df.columns[constant_mask].to_list()
+        X_non_constant = X_df.drop(columns=self.constant_features_, errors="ignore")
 
         corr_matrix = X_non_constant.corr(method="spearman").abs().fillna(0)
         upper = corr_matrix.where(
             np.triu(np.ones(corr_matrix.shape), k=1).astype(bool)
         )
-        correlation_features = [
+        self.correlation_features_ = [
             col for col in upper.columns if any(upper[col] > self.corr_threshold)
         ]
-        X_corr = X_non_constant.drop(columns=correlation_features, errors="ignore")
+        X_corr = X_non_constant.drop(columns=self.correlation_features_, errors="ignore")
 
         if X_corr.shape[1] == 0:
-            return [], constant_features, correlation_features
+            raise ValueError("No features left after constant and correlation filtering.")
 
         k = min(self.k_univariate, X_corr.shape[1])
-        selector = SelectKBest(score_func=f_classif, k=k)
-        selector.fit(X_corr, y)
-        selected_features = X_corr.columns[selector.get_support()].to_list()
-        return selected_features, constant_features, correlation_features
+        self.univariate_selector_ = SelectKBest(score_func=f_classif, k=k)
+        self.univariate_selector_.fit(X_corr, y)
 
-    def fit(self, X, y):
-        X_df = self._to_dataframe(X)
-        self.feature_names_in_ = X_df.columns.to_list()
+        self.univariate_features_ = X_corr.columns[
+            self.univariate_selector_.get_support()
+        ].to_list()
+        X_uni = X_corr[self.univariate_features_]
 
-        y_series = pd.Series(y, index=X_df.index)
-        final_features, constant_features, correlation_features = self._select_features_once(
-            X_df, y_series
-        )
-        self.constant_features_ = constant_features
-        self.correlation_features_ = correlation_features
-        self.univariate_features_ = final_features.copy()
+        n_rfe = min(self.n_features_to_select, X_uni.shape[1])
+        if n_rfe == 0:
+            raise ValueError("No features left for optimization-based feature selection.")
 
-        if len(final_features) == 0:
-            raise ValueError("No features left after constant, correlation, and univariate filtering.")
-
-        consensus_cv = StratifiedKFold(
-            n_splits=self.consensus_n_splits,
-            shuffle=True,
+        self.rfe_estimator_ = LinearSVC(
+            C=self.rfe_estimator_c,
+            dual=False,
+            max_iter=10000,
             random_state=RANDOM_STATE,
         )
-
-        features_per_consensus_fold = []
-        for train_idx, _ in consensus_cv.split(X_df, y_series):
-            X_fold = X_df.iloc[train_idx]
-            y_fold = y_series.iloc[train_idx]
-            fold_features, _, _ = self._select_features_once(X_fold, y_fold)
-            if fold_features:
-                features_per_consensus_fold.append(fold_features)
-
-        if not features_per_consensus_fold:
-            self.features_ = final_features.copy()
-            self.consensus_feature_counts_ = Counter(final_features)
-            return self
-
-        feature_counts = Counter(
-            feature
-            for fold_features in features_per_consensus_fold
-            for feature in fold_features
+        self.rfe_selector_ = RFE(
+            estimator=self.rfe_estimator_,
+            n_features_to_select=n_rfe,
+            step=self.rfe_step,
         )
-        min_count = max(
-            1,
-            int(np.ceil(self.consensus_min_fraction * len(features_per_consensus_fold))),
-        )
-        consensus_features = [
-            feature for feature, count in feature_counts.items() if count >= min_count
-        ]
+        self.rfe_selector_.fit(X_uni, y)
 
-        if not consensus_features:
-            consensus_features = [
-                feature
-                for feature, _ in feature_counts.most_common(min(len(final_features), 10))
-            ]
-
-        ordered_consensus = [
-            feature for feature in final_features if feature in set(consensus_features)
-        ]
-        self.features_ = ordered_consensus if ordered_consensus else final_features.copy()
-        self.consensus_feature_counts_ = feature_counts
-        self.consensus_min_count_ = min_count
-        self.consensus_features_per_fold_ = features_per_consensus_fold
+        self.features_ = X_uni.columns[self.rfe_selector_.get_support()].to_list()
         return self
 
     def transform(self, X):
         X_df = self._to_dataframe(X)
-        return X_df[self.features_]
+        X_non_constant = X_df.drop(columns=self.constant_features_, errors="ignore")
+        X_corr = X_non_constant.drop(columns=self.correlation_features_, errors="ignore")
+        X_uni = X_corr[self.univariate_features_]
+        return X_uni[self.features_]
 
 
 def build_pipeline():
@@ -145,15 +110,15 @@ def build_pipeline():
         [
             (
                 "feat_select",
-                CorrUnivariateSelector(
+                CorrUnivariateOptimizationSelector(
                     corr_threshold=0.9,
                     k_univariate=20,
-                    consensus_n_splits=5,
-                    consensus_min_fraction=0.6,
+                    n_features_to_select=5,
+                    rfe_estimator_c=1.0,
                 ),
             ),
             ("scaler", RobustScaler()),
-            ("clf", SVC(kernel="linear")),
+            ("clf", SVC()),
         ]
     )
 
@@ -166,27 +131,13 @@ def summarize_params(best_params_per_fold):
     return summary
 
 
-def summarize_feature_stability(features_per_fold, n_folds):
+def summarize_selected_features(features_per_fold):
     all_selected = [feature for fold in features_per_fold for feature in fold]
     feature_counts = Counter(all_selected)
-
-    consensus_features = [
-        feature for feature, count in feature_counts.items() if count == n_folds
+    ordered_selected_features = [
+        feature for feature, _ in feature_counts.most_common()
     ]
-    if not consensus_features:
-        consensus_features = [
-            feature for feature, count in feature_counts.items() if count >= n_folds - 1
-        ]
-
-    if not consensus_features:
-        consensus_features = [
-            feature
-            for feature, _ in feature_counts.most_common(
-                min(10, max(len(features_per_fold[0]), 1))
-            )
-        ]
-
-    return feature_counts, consensus_features
+    return feature_counts, ordered_selected_features
 
 
 def run_shap_analysis(final_pipeline, X_trainval, X_test, output_dir="shap_outputs"):
@@ -287,9 +238,12 @@ def run_nested_cv(X_trainval, y_trainval):
 
     param_dist = {
         "feat_select__corr_threshold": [0.8, 0.85, 0.9],  # Drempel voor wanneer twee features te sterk correleren.
-        "feat_select__k_univariate": [10, 15],  # Aantal features dat na ANOVA univariate selectie overblijft.
-        "feat_select__consensus_min_fraction": [0.6, 0.8],  # Alleen features behouden die in meerdere consensus-folds terugkomen.
-        "clf__C": [0.01, 0.1, 1, 10],  # Lage tot matig hoge C houdt regularisatie aanwezig, maar geeft iets meer ruimte dan de strengste setting.
+        "feat_select__k_univariate": [10, 15, 20, 30],  # Aantal features dat na ANOVA univariate selectie overblijft.
+        "feat_select__n_features_to_select": [3, 5, 8, 10],  # Aantal features dat RFE uiteindelijk behoudt.
+        "feat_select__rfe_estimator_c": [0.1, 1, 10],  # C-waarde van de lineaire SVM binnen RFE.
+        "clf__kernel": ["linear", "rbf"],  # Type scheidingsgrens van de uiteindelijke SVM.
+        "clf__C": [0.1, 1, 10, 100],  # Balans tussen regularisatie en trainingsfouten.
+        "clf__gamma": ["scale", 0.1, 0.01, 0.001],  # Relevant voor niet-lineaire kernels zoals RBF.
     }
 
     all_y_outer = []
@@ -315,7 +269,7 @@ def run_nested_cv(X_trainval, y_trainval):
             n_iter=20,  # Test 20 willekeurige hyperparametercombinaties per outer fold.
             cv=inner_cv,
             scoring="roc_auc",
-            n_jobs=-1,
+            n_jobs=N_JOBS,
             random_state=RANDOM_STATE,
         )
         search.fit(X_outer_train, y_outer_train)
@@ -337,7 +291,7 @@ def run_nested_cv(X_trainval, y_trainval):
             f"{X_outer_train.shape[1] - len(selector.constant_features_)} (after constant) -> "
             f"{X_outer_train.shape[1] - len(selector.constant_features_) - len(selector.correlation_features_)} (after correlation) -> "
             f"{len(selector.univariate_features_)} (after univariate) -> "
-            f"{len(selector.features_)} (after consensus)"
+            f"{len(selector.features_)} (after optimization)"
         )
         print(f"Selected features: {selector.features_}")
         print(
@@ -346,12 +300,12 @@ def run_nested_cv(X_trainval, y_trainval):
         )
 
     nested_auc = roc_auc_score(all_y_outer, all_scores_outer)
-    feature_counts, consensus_features = summarize_feature_stability(
-        features_per_fold, outer_cv.get_n_splits()
+    feature_counts, ordered_selected_features = summarize_selected_features(
+        features_per_fold
     )
     final_params = summarize_params(best_params_per_fold)
 
-    return nested_auc, feature_counts, consensus_features, final_params
+    return nested_auc, feature_counts, ordered_selected_features, final_params
 
 
 def main():
@@ -367,14 +321,14 @@ def main():
         random_state=RANDOM_STATE,
     )
 
-    nested_auc, feature_counts, consensus_features, final_params = run_nested_cv(
+    nested_auc, feature_counts, ordered_selected_features, final_params = run_nested_cv(
         X_trainval, y_trainval
     )
 
     print("\n" + "=" * 40)
-    print("Feature stability")
+    print("Selected features across outer folds")
     print(f"Unique selected features: {len(feature_counts)}")
-    print(f"Consensus/stable features: {consensus_features}")
+    print(f"Most frequently selected features: {ordered_selected_features}")
 
     print("\n" + "=" * 40)
     print(f"Nested CV ROC-AUC: {nested_auc:.3f}")
@@ -382,22 +336,6 @@ def main():
 
     final_pipeline = build_pipeline()
     final_pipeline.set_params(**final_params)
-
-    regular_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
-    regular_cv_scores = cross_val_score(
-        final_pipeline,
-        X_trainval,
-        y_trainval,
-        cv=regular_cv,
-        scoring="roc_auc",
-        n_jobs=-1,
-    )
-
-    print("\n" + "=" * 40)
-    print(
-        f"5-fold CV ROC-AUC: {regular_cv_scores.mean():.3f} "
-        f"+/- {regular_cv_scores.std():.3f}"
-    )
 
     final_pipeline.fit(X_trainval, y_trainval)
     test_scores = final_pipeline.decision_function(X_test)
