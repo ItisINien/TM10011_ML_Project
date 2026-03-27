@@ -443,13 +443,14 @@ def SVM_Uni():
     data = load_data()
     X = data.select_dtypes(include=[np.number]).copy()
     y = data["label"].map({"benign": 0, "malignant": 1}).astype(int)
+
     # 2. Train/test split
     X_trainval, X_test, y_trainval, y_test = train_test_split(
         X, y, test_size=0.2, stratify=y, random_state=RANDOM_STATE
     )
 
-    # 3. Run nested CV (of je bestaande functie)
-    nested_auc, nested_nested_auc, nested_f2, fold_aucs, feature_counts, consensus_features, final_params = run_nested_cv(X_trainval, y_trainval)f2, fold_aucs, _ = run_nested_cv(X_trainval, y_trainval)
+    # 3. Run nested CV en pak alleen de eerste 3 resultaten
+    nested_auc, nested_f2, fold_aucs, *_ = run_nested_cv(X_trainval, y_trainval)
 
     # 4. Stop resultaten in dictionary
     results = {
