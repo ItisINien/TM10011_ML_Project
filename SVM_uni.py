@@ -433,9 +433,8 @@ def SVM_Uni():
         X, y, test_size=0.2, stratify=y, random_state=RANDOM_STATE
     )
 
-    # 3. Run nested CV en pak alleen de eerste 3 resultaten
-    nested_auc, nested_f2, fold_aucs, *_ = run_nested_cv(X_trainval, y_trainval)
-
+    # 3. Run nested CV 
+    nested_auc, nested_f2, fold_aucs, f_counts, c_features, f_params = run_nested_cv(X_trainval, y_trainval)
     # 4. Stop resultaten in dictionary
     results = {
         "nested_auc_SVM_uni": float(nested_auc),

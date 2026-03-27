@@ -156,7 +156,3 @@ def Forest_Uni():
     "fold_aucs_uni": (fold_aucs),
 }
     return results
-<<<<<<< HEAD
-
-=======
->>>>>>> 5b2d9fe4a920357075e1b59dce975ffcd6f0862b

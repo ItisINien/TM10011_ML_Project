@@ -111,7 +111,6 @@ for outer_train_idx, outer_val_idx in outer_cv.split(X_trainval, y_trainval):
     best_params_list.append(grid_search.best_params_)
 
     print(f"Outer fold best params: {grid_search.best_params_}")
-    print(f"Outer fold best inner CV ROC-AUC: {grid_search.best_score_:.3f}")
 
     # Beste model toepassen op outer validation fold
     best_model = grid_search.best_estimator_
@@ -159,24 +158,6 @@ y_pred = (np.array(all_y_outer_proba) >= 0.5).astype(int)
 nested_f2 = fbeta_score(all_y_outer, y_pred, beta=2)
 print(f"\nNested CV F2-score: {nested_f2:.3f}")
 
-<<<<<<< HEAD
-# %%
- 7️⃣ SHAP ANALYSE OP FINAL MODEL
-=======
-# %% 6 FEATURE IMPORTANCE OVER ALLE FOLDS
-feature_importance_df = pd.concat(feature_importances_list)
-feature_importance_mean = feature_importance_df.groupby('feature')['importance'].mean().sort_values(ascending=False)
-
-threshold = 0.01
-interesting_features = feature_importance_mean[feature_importance_mean > threshold]
-print(f"Aantal belangrijke features: {len(interesting_features)}")
-
-import matplotlib.pyplot as plt
-plt.figure(figsize=(10,6))
-plt.barh(feature_importance_mean.index[:20][::-1], feature_importance_mean.values[:20][::-1])
-plt.xlabel('Mean Feature Importance over folds')
-plt.title('Top 20 features RandomForest')
-plt.show()
 
 # %% 7 FINAL MODEL MET BESTE HYPERPARAMETERS VAN NESTED CV
 
@@ -210,28 +191,7 @@ pipeline_final.fit(X_trainval, y_trainval)
 X_test_transformed = pipeline_final.named_steps['feat_select'].transform(X_test)
 y_test_proba = pipeline_final.named_steps['clf'].predict_proba(X_test_transformed)[:,1]
 
-# 5 Test ROC-AUC
-test_auc = roc_auc_score(y_test, y_test_proba)
-print(f"Test ROC-AUC: {test_auc:.3f}")
-
-# 6 Plot ROC-curve
-fpr, tpr, thresholds = roc_curve(y_test, y_test_proba)
-roc_auc_val = auc(fpr, tpr)
-
-plt.figure(figsize=(8,6))
-plt.plot(fpr, tpr, color='blue', lw=2, label=f'ROC curve (AUC = {roc_auc_val:.3f})')
-plt.plot([0, 1], [0, 1], color='gray', lw=1, linestyle='--', label='Random guess')
-plt.xlim([0.0, 1.0])
-plt.ylim([0.0, 1.05])
-plt.xlabel('False Positive Rate')
-plt.ylabel('True Positive Rate')
-plt.title('ROC Curve - Test Set')
-plt.legend(loc='lower right')
-plt.grid(True)
-plt.show()
-
 # 7 SHAP ANALYSE OP FINAL MODEL
->>>>>>> 5b2d9fe4a920357075e1b59dce975ffcd6f0862b
 X_model = pipeline_final.named_steps['feat_select'].transform(X_trainval)
 X_model = pd.DataFrame(X_model, columns=pipeline_final.named_steps['feat_select'].features_)
 
