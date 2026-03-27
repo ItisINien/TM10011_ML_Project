@@ -1,0 +1,159 @@
+
+# %% IMPORTS
+import pandas as pd
+import numpy as np
+from sklearn.preprocessing import RobustScaler
+from sklearn.model_selection import StratifiedKFold, RandomizedSearchCV, train_test_split
+from sklearn.linear_model import LogisticRegression
+from sklearn.feature_selection import SelectKBest, f_classif
+from sklearn.pipeline import Pipeline
+from sklearn.metrics import roc_auc_score
+from sklearn.base import BaseEstimator, TransformerMixin
+from worcliver.load_data import load_data
+import matplotlib.pyplot as plt
+
+# %% 1️⃣ CUSTOM TRANSFORMER
+class CorrUnivariateSelector(BaseEstimator, TransformerMixin):
+    """
+    1️⃣ Verwijdert constant features
+    2️⃣ Verwijdert sterk correlerende features (Spearman)
+    3️⃣ Selecteert top-k features via univariate ANOVA
+    """
+    def __init__(self, k=200, corr_threshold=0.9):
+        self.k = k
+        self.corr_threshold = corr_threshold
+
+    def fit(self, X, y):
+        X_df = X.copy()
+
+        # 1️⃣ Verwijder constant features
+        constant_mask = X_df.nunique(dropna=False) <= 1
+        self.constant_features_ = X_df.columns[constant_mask].to_list()
+        X_df = X_df.drop(columns=self.constant_features_, errors="ignore")
+
+        # 2️⃣ Verwijder sterk correlerende features
+        corr_matrix = X_df.corr(method='spearman').abs()
+        upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+        self.corr_features_ = [col for col in upper.columns if any(upper[col] > self.corr_threshold)]
+        X_df = X_df.drop(columns=self.corr_features_, errors="ignore")
+
+        # 3️⃣ Top-k univariate features
+        k_final = min(self.k, X_df.shape[1])
+        self.selector_ = SelectKBest(score_func=f_classif, k=k_final)
+        self.selector_.fit(X_df, y)
+        self.features_ = X_df.columns[self.selector_.get_support()].to_list()
+
+        return self
+
+    def transform(self, X):
+        X_df = X.copy()
+        X_df = X_df.drop(columns=self.constant_features_, errors="ignore")
+        X_df = X_df.drop(columns=self.corr_features_, errors="ignore")
+        X_df = pd.DataFrame(self.selector_.transform(X_df), columns=self.features_)
+        return X_df
+
+# %% 2️⃣ LOAD DATA
+data = load_data()
+X = data.select_dtypes(include=[np.number])
+y = data['label'].map({'benign': 0, 'malignant': 1})
+
+# %% 3️⃣ TRAIN/TEST SPLIT
+X_trainval, X_test, y_trainval, y_test = train_test_split(
+    X, y, test_size=0.2, stratify=y, random_state=42
+)
+
+# %% 4️⃣ NESTED CROSS-VALIDATION
+outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+inner_cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
+
+all_y_outer = []
+all_y_outer_proba = []
+coef_list = []
+
+# Hyperparameter grid
+param_dist = {
+    'feat_select__k': [100, 150, 200, 250],
+    'feat_select__corr_threshold': [0.8, 0.85, 0.9],
+    'clf__C': [0.001, 0.01, 0.1, 1, 10, 100],
+    'clf__penalty': ['l2'],
+    'clf__solver': ['lbfgs']
+}
+
+for outer_train_idx, outer_val_idx in outer_cv.split(X_trainval, y_trainval):
+    X_outer_train = X_trainval.iloc[outer_train_idx].copy()
+    X_outer_val = X_trainval.iloc[outer_val_idx].copy()
+    y_outer_train = y_trainval.iloc[outer_train_idx]
+    y_outer_val = y_trainval.iloc[outer_val_idx]
+
+    pipeline = Pipeline([
+        ('feat_select', CorrUnivariateSelector(k=200, corr_threshold=0.9)),
+        ('scaler', RobustScaler()),
+        ('clf', LogisticRegression(max_iter=1000))
+    ])
+
+    grid_search = RandomizedSearchCV(
+        estimator=pipeline,
+        param_distributions=param_dist,
+        n_iter=30,
+        cv=inner_cv,
+        scoring='roc_auc',
+        n_jobs=-1,
+        random_state=42
+    )
+
+    grid_search.fit(X_outer_train, y_outer_train)
+
+    best_model = grid_search.best_estimator_
+    y_outer_proba = best_model.predict_proba(X_outer_val)[:,1]
+
+    all_y_outer.extend(y_outer_val)
+    all_y_outer_proba.extend(y_outer_proba)
+
+    fold_auc = roc_auc_score(y_outer_val, y_outer_proba)
+    print(f"Outer fold AUC: {fold_auc:.3f} | Best params: {grid_search.best_params_}")
+
+    # Coefficients van geselecteerde features
+    selected_features = best_model.named_steps['feat_select'].features_
+    coefs = best_model.named_steps['clf'].coef_[0]
+    coef_list.append(pd.DataFrame({'feature': selected_features, 'coefficient': coefs}))
+
+    # Coëfficiënten opslaan en feature count printen
+    selected_features = best_model.named_steps['feat_select'].features_
+    print(f"Number of features selected in this fold: {len(selected_features)}")
+    coefs = best_model.named_steps['clf'].coef_[0]
+
+
+# %% 5️⃣ NESTED CV EVALUATION
+nested_auc = roc_auc_score(all_y_outer, all_y_outer_proba)
+print(f"\nNested CV ROC-AUC: {nested_auc:.3f}")
+
+# %% 6️⃣ COEFFICIENT ANALYSIS
+# Gemiddelde coëfficiënten per feature
+coef_mean = coef_df.groupby('feature')['coefficient'].mean()
+
+# Sorteer op absolute waarde (voor belangrijkheid)
+coef_mean_sorted = coef_mean.reindex(coef_mean.abs().sort_values(ascending=False).index)
+
+print("Top 20 features (LR):")
+print(coef_mean_sorted.head(20))
+
+# Plot absolute waarden
+plt.figure(figsize=(10,6))
+plt.barh(
+    coef_mean_sorted.index[:20][::-1],        # top 20 features, omgekeerd
+    coef_mean_sorted.abs().values[:20][::-1] # absolute waarden van coefficients
+)
+plt.xlabel('Mean absolute coefficient')
+plt.title('Top 20 features Logistic Regression')
+plt.show()
+
+# %% 7️⃣ FINAL MODEL OP TESTSET (optioneel)
+# final_pipeline = Pipeline([
+#     ('feat_select', CorrUnivariateSelector(k=200, corr_threshold=0.9)),
+#     ('scaler', RobustScaler()),
+#     ('clf', LogisticRegression(max_iter=1000, C=1, penalty='l2', solver='lbfgs'))
+# ])
+# final_pipeline.fit(X_trainval, y_trainval)
+# y_test_proba = final_pipeline.predict_proba(X_test)[:,1]
+# test_auc = roc_auc_score(y_test, y_test_proba)
+# print(f"Test ROC-AUC: {test_auc:.3f}")

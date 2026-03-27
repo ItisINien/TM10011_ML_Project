@@ -58,7 +58,7 @@ for outer_train_idx, outer_val_idx in outer_cv.split(X_trainval, y_trainval):
         param_distributions=param_dist,
         n_iter=100,           # Hij probeert nu maar 30 willekeurige combinaties per inner fold
         cv=inner_cv,
-        scoring='roc_auc',
+        scoring=f2_scorer,
         n_jobs=-1,
         random_state=42)
     grid_search.fit(X_outer_train, y_outer_train)

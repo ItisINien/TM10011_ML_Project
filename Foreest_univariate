@@ -12,6 +12,8 @@ from worcliver.load_data import load_data
 import shap
 import matplotlib.pyplot as plt
 from sklearn.metrics import make_scorer, fbeta_score
+from sklearn.model_selection import RepeatedStratifiedKFold
+
 
 # %% 1️⃣ CUSTOM TRANSFORMER VOOR CORR + CONSTANT FILTER
 class CorrAndSelect(BaseEstimator, TransformerMixin):
@@ -77,17 +79,19 @@ for fold_idx, (outer_train_idx, outer_val_idx) in enumerate(outer_cv.split(X_tra
     y_outer_val = y_trainval.iloc[outer_val_idx]
 
     # Pipeline: Corr + Univariate + Scaler + Classifier
+
     pipeline = Pipeline([
-        ('feat_select', CorrAndSelect(corr_threshold=0.9)),
-        ('univariate', SelectKBest(score_func=f_classif, k=k_univar)),
-        ('scaler', RobustScaler()),
-        ('clf', RandomForestClassifier(random_state=42))
+        ("feat_select", CorrAndSelect(corr_threshold=0.9)),
+        ("scaler", RobustScaler()),
+        ("select_k", SelectKBest(score_func=f_classif)),
+        ("clf", RandomForestClassifier(random_state=42))
     ])
 
     param_dist = {
-        'clf__n_estimators': [100, 200, 300, 500],
-        'clf__max_depth': [None, 5, 10, 20],
-        'clf__min_samples_split': [2, 5, 10]
+    "select_k__k": [5, 10, 20, 30, 50],
+    "clf__n_estimators": [100,200,300,500],
+    "clf__max_depth": [None,5,10,20],
+    "clf__min_samples_split": [2,5,10]
     }
 
     # RandomizedSearchCV inner loop
@@ -96,7 +100,7 @@ for fold_idx, (outer_train_idx, outer_val_idx) in enumerate(outer_cv.split(X_tra
         param_distributions=param_dist,
         n_iter=30,  # sneller
         cv=inner_cv,
-        scoring='roc_auc',
+        scoring=f2_scorer,
         n_jobs=-1,
         random_state=42
     )
@@ -108,7 +112,7 @@ for fold_idx, (outer_train_idx, outer_val_idx) in enumerate(outer_cv.split(X_tra
 
     # Feature counts per fold
     X_corr = best_model.named_steps['feat_select'].transform(X_outer_train)
-    X_univar = best_model.named_steps['univariate'].transform(X_corr)
+    X_univar = best_model.named_steps['select_k'].transform(X_corr)    
     print(
         f"Features orig={X_outer_train.shape[1]}, "
         f"na const+corr={X_corr.shape[1]}, "
@@ -122,7 +126,7 @@ for fold_idx, (outer_train_idx, outer_val_idx) in enumerate(outer_cv.split(X_tra
     print(f"Best params: {grid_search.best_params_}")
 
     # Feature importances opslaan
-    univar_features = X_corr.columns[best_model.named_steps['univariate'].get_support()]
+    univar_features = X_corr.columns[best_model.named_steps['select_k'].get_support()]
     importances = best_model.named_steps['clf'].feature_importances_
     feature_importances_list.append(pd.DataFrame({
         'feature': univar_features,
@@ -141,7 +145,7 @@ nested_f2 = fbeta_score(all_y_outer, y_pred, beta=2)
 print(f"\nNested CV F2-score: {nested_f2:.3f}")
 
 
-# %% 7️⃣ FINALE TRAINING OP HELE TRAININGSET
+ # %% 7️⃣ FINALE TRAINING OP HELE TRAININGSET
 # final_pipeline = Pipeline([
 #     ('feat_select', CorrAndSelect(corr_threshold=0.9)),
 #     ('univariate', SelectKBest(score_func=f_classif, k=k_univar)),

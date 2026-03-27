@@ -224,3 +224,24 @@ plt.barh(shap_importance.head(20).feature[::-1],
 plt.xlabel("Mean Absolute SHAP Value")
 plt.title("Top 20 SHAP Feature Importance")
 plt.show()
+
+# %% FINAL MODEL TRAINEN OP ALLE TRAINVAL DATA
+
+# final_model = Pipeline([
+#     ("feat_select", CorrAndSelect(corr_threshold=0.9)),
+#     ("scaler", RobustScaler()),
+
+#     ("rfe", RFE(
+#         estimator=RandomForestClassifier(n_estimators=200, random_state=42),
+#         n_features_to_select=n_features_rfe
+#     )),
+
+#     ("clf", RandomForestClassifier(
+#         n_estimators=grid_search.best_params_["clf__n_estimators"],
+#         max_depth=grid_search.best_params_["clf__max_depth"],
+#         min_samples_split=grid_search.best_params_["clf__min_samples_split"],
+#         random_state=42
+#     ))
+# ])
+
+# final_model.fit(X_trainval, y_trainval)

@@ -13,6 +13,8 @@ import shap
 from sklearn.metrics import make_scorer, fbeta_score
 from sklearn.metrics import roc_curve, auc
 from collections import Counter
+from sklearn.model_selection import RepeatedStratifiedKFold
+
 
 # %% 1️⃣ CUSTOM TRANSFORMER VOOR CORR + SELECTK
 class CorrAndSelect(BaseEstimator, TransformerMixin):
@@ -65,7 +67,7 @@ X_trainval, X_test, y_trainval, y_test = train_test_split(
 )
 
 # %% 4️⃣ NESTED CV
-outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42) 
 inner_cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
 
 all_y_outer = []
@@ -100,7 +102,7 @@ for outer_train_idx, outer_val_idx in outer_cv.split(X_trainval, y_trainval):
     grid_search = RandomizedSearchCV(
         estimator=pipeline,
         param_distributions=param_dist,
-        n_iter=200,           
+        n_iter=30,           
         cv=inner_cv,
         scoring=f2_scorer,
         n_jobs=-1,

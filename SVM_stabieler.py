@@ -227,5 +227,5 @@ def main():
 #     print(f"\nFinal test ROC-AUC: {test_auc:.3f}")
 
 
-if __name__ == "__main__":
-     main()
+# if __name__ == "__main__":
+#      main()
