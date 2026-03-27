@@ -16,7 +16,7 @@ from collections import Counter
 from sklearn.model_selection import RepeatedStratifiedKFold
 
 
-# %% 1️⃣ CUSTOM TRANSFORMER VOOR CORR + SELECTK
+# %% 1 CUSTOM TRANSFORMER VOOR CORR + SELECTK
 class CorrAndSelect(BaseEstimator, TransformerMixin):
     def __init__(self, corr_threshold=0.9):
         # self.k = k
@@ -53,7 +53,7 @@ class CorrAndSelect(BaseEstimator, TransformerMixin):
         X_selected = X_filtered[self.features_]
         return X_selected
     
-    # %% 2️⃣ LOAD DATA
+    # %% 2 LOAD DATA
 data = load_data()
 X = data.select_dtypes(include=[np.number])
 y = data['label'].map({'benign': 0, 'malignant': 1})
@@ -61,12 +61,12 @@ y = data['label'].map({'benign': 0, 'malignant': 1})
 f2_scorer = make_scorer(fbeta_score, beta=2)
 
 
-# %% 3️⃣ TRAIN/TEST SPLIT
+# %% 3 TRAIN/TEST SPLIT
 X_trainval, X_test, y_trainval, y_test = train_test_split(
     X, y, test_size=0.2, stratify=y, random_state=42
 )
 
-# %% 4️⃣ NESTED CV
+# %% 4 NESTED CV
 outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42) 
 inner_cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
 
@@ -148,7 +148,7 @@ for outer_train_idx, outer_val_idx in outer_cv.split(X_trainval, y_trainval):
         'importance': importances
     }))
 
-# %% 5️⃣ EVALUATE NESTED CV
+# %% 5 EVALUATE NESTED CV
 roc_auc = roc_auc_score(all_y_outer, all_y_outer_proba)
 print(f"Nested CV ROC-AUC: {roc_auc:.3f}")
 
@@ -161,7 +161,7 @@ y_pred = (np.array(all_y_outer_proba) >= 0.5).astype(int)
 nested_f2 = fbeta_score(all_y_outer, y_pred, beta=2)
 print(f"\nNested CV F2-score: {nested_f2:.3f}")
 
-# %% 6️⃣ FEATURE IMPORTANCE OVER ALLE FOLDS
+# %% 6 FEATURE IMPORTANCE OVER ALLE FOLDS
 feature_importance_df = pd.concat(feature_importances_list)
 feature_importance_mean = feature_importance_df.groupby('feature')['importance'].mean().sort_values(ascending=False)
 
@@ -176,9 +176,9 @@ plt.xlabel('Mean Feature Importance over folds')
 plt.title('Top 20 features RandomForest')
 plt.show()
 
-# %% 7️⃣ FINAL MODEL MET BESTE HYPERPARAMETERS VAN NESTED CV
+# %% 7 FINAL MODEL MET BESTE HYPERPARAMETERS VAN NESTED CV
 
-# 1️⃣ Kies de beste hyperparameters van de outer folds
+# 1 Kies de beste hyperparameters van de outer folds
 best_params = grid_search.best_params_
 
 final_params = {}
@@ -189,7 +189,7 @@ for param in best_params_list[0].keys():
 print("Consensus hyperparameters over alle outer folds:")
 print(final_params)
 
-# 2️⃣ Maak final pipeline met dezelfde CorrAndSelect config en beste RF params
+# 2 Maak final pipeline met dezelfde CorrAndSelect config en beste RF params
 pipeline_final = Pipeline([
     ('feat_select', CorrAndSelect(corr_threshold=0.9)),
     ('scaler', RobustScaler()),
@@ -201,18 +201,18 @@ pipeline_final = Pipeline([
     ))
 ])
 
-# 3️⃣ Fit pipeline op volledige trainval set
+# 3 Fit pipeline op volledige trainval set
 pipeline_final.fit(X_trainval, y_trainval)
 
-# 4️⃣ Transformeer test set en predict proba
+# 4 Transformeer test set en predict proba
 X_test_transformed = pipeline_final.named_steps['feat_select'].transform(X_test)
 y_test_proba = pipeline_final.named_steps['clf'].predict_proba(X_test_transformed)[:,1]
 
-# 5️⃣ Test ROC-AUC
+# 5 Test ROC-AUC
 test_auc = roc_auc_score(y_test, y_test_proba)
 print(f"Test ROC-AUC: {test_auc:.3f}")
 
-# 6️⃣ Plot ROC-curve
+# 6 Plot ROC-curve
 fpr, tpr, thresholds = roc_curve(y_test, y_test_proba)
 roc_auc_val = auc(fpr, tpr)
 
@@ -228,7 +228,7 @@ plt.legend(loc='lower right')
 plt.grid(True)
 plt.show()
 
-# 7️⃣ SHAP ANALYSE OP FINAL MODEL
+# 7 SHAP ANALYSE OP FINAL MODEL
 X_model = pipeline_final.named_steps['feat_select'].transform(X_trainval)
 X_model = pd.DataFrame(X_model, columns=pipeline_final.named_steps['feat_select'].features_)
 
@@ -260,7 +260,7 @@ plt.xlabel("Mean Absolute SHAP Value")
 plt.title("Top 20 SHAP Feature Importance")
 plt.show()
 
-# 8️⃣ Print gekozen hyperparameters
+# 8 Print gekozen hyperparameters
 print("\nGekozen hyperparameters RandomForest final model:")
 for param, value in pipeline_final.named_steps['clf'].get_params().items():
     print(f"{param}: {value}")
