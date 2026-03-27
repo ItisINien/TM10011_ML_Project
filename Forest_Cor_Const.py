@@ -250,5 +250,7 @@ def Forest_const_cor(test=False):
 
         results["test_auc"] = float(test_auc)
         results["test_f2"] = float(test_f2)
+        results["y_test"] = y_test 
+        results["test_scores"] = test_scores  
 
     return results

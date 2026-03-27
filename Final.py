@@ -136,3 +136,30 @@ elif best_model_name == "LG Univariate":
 
 print("\nTest set results:")
 print("Test ROC-AUC:", round(results["test_auc"], 3))
+
+# --- ROC Curve Sectie ---
+print("\nTest set results:")
+print("Test ROC-AUC:", round(results["test_auc"], 3))
+
+# Haal de data uit de results dictionary
+y_true = results["y_test"]
+y_score = results["test_scores"]
+
+from sklearn.metrics import roc_curve, auc
+import matplotlib.pyplot as plt
+# Bereken de curve
+fpr, tpr, _ = roc_curve(y_true, y_score)
+roc_auc = auc(fpr, tpr)
+
+# Plotten
+plt.figure(figsize=(8, 6))
+plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (area = {roc_auc:.2f})')
+plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--') # De diagonale lijn (kans)
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title(f'ROC Curve - Test Set ({best_model_name})')
+plt.legend(loc="lower right")
+plt.grid(alpha=0.3)
+plt.show()
