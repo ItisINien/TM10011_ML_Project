@@ -239,13 +239,21 @@ def Forest_const_cor(test=False):
     "fold_aucs_const_cor": (fold_aucs),
 
 }
-    
-    if test:
-    test_auc = roc_auc_score(y_test, test_scores)
-    test_pred = (test_scores > 0).astype(int)
-    test_f2 = fbeta_score(y_test, test_pred, beta=2)
 
-    results["test_auc"] = float(test_auc)
-    results["test_f2"] = float(test_f2)
+# Train final model on full trainval set
+    best_model.fit(X_trainval, y_trainval)
+
+# Predict on test set
+    test_scores = best_model.predict_proba(X_test)[:,1]
+
+    test_pred = (test_scores > 0.5).astype(int)    
+
+    if test:
+        test_auc = roc_auc_score(y_test, test_scores)
+        test_pred = (test_scores > 0).astype(int)
+        test_f2 = fbeta_score(y_test, test_pred, beta=2)
+
+        results["test_auc"] = float(test_auc)
+        results["test_f2"] = float(test_f2)
 
     return results
