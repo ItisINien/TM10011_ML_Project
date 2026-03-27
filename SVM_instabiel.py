@@ -4,11 +4,20 @@ from collections import Counter
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+try:
+    import shap
+except ImportError:
+    shap = None
 
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.feature_selection import RFE, SelectKBest, f_classif
-from sklearn.metrics import roc_auc_score, roc_curve
-from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold, cross_val_score
+from sklearn.metrics import fbeta_score, make_scorer, roc_auc_score, roc_curve
+from sklearn.model_selection import (
+    RandomizedSearchCV,
+    StratifiedKFold,
+    cross_val_score,
+    train_test_split,
+)
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import RobustScaler
 from sklearn.svm import LinearSVC, SVC
@@ -33,6 +42,10 @@ N_RANDOM_SEARCH_ITERATIONS = 20
 
 # Store the ROC plot filename in one place to avoid hard-coded repetition.
 ROC_OUTPUT_PATH = "roc_curve_nested_cv_svm.png"
+SHAP_OUTPUT_DIR = "shap_outputs"
+
+# Give recall extra weight compared to precision in the F-beta score.
+F_BETA = 2
 
 
 class CorrUnivariateOptimizationSelector(BaseEstimator, TransformerMixin):
@@ -297,6 +310,79 @@ def save_roc_curve(y_true, y_scores, roc_auc, output_path=ROC_OUTPUT_PATH):
     print(f"Saved ROC curve to: {Path(output_path).resolve()}")
 
 
+# Convert validation predictions into one overall F-beta score.
+def compute_fbeta_from_predictions(y_true, y_pred, beta=F_BETA):
+    # Use zero_division=0 to avoid errors when a fold predicts no positive cases.
+    return float(fbeta_score(y_true, y_pred, beta=beta, zero_division=0))
+
+
+# Explain the final trained model with SHAP values when possible.
+def run_shap_analysis(final_pipeline, X_trainval, output_dir=SHAP_OUTPUT_DIR):
+    # Skip SHAP gracefully when the optional dependency is unavailable.
+    if shap is None:
+        print("\nSHAP analysis skipped: package 'shap' is not installed.")
+        return
+
+    # SHAP with LinearExplainer is only appropriate for a linear final SVM here.
+    clf = final_pipeline.named_steps["clf"]
+    if clf.kernel != "linear":
+        print("\nSHAP analysis skipped: current final classifier is not linear.")
+        return
+
+    # Reuse the fitted preprocessing steps from the final pipeline.
+    selector = final_pipeline.named_steps["feat_select"]
+    scaler = final_pipeline.named_steps["scaler"]
+    output_path = Path(output_dir)
+    output_path.mkdir(exist_ok=True)
+
+    # SHAP must see the same selected feature space as the classifier.
+    train_selected = pd.DataFrame(
+        selector.transform(X_trainval),
+        columns=selector.features_,
+        index=X_trainval.index,
+    )
+    # Explain the scaled input because that is what the classifier consumes.
+    train_scaled = pd.DataFrame(
+        scaler.transform(train_selected),
+        columns=selector.features_,
+        index=X_trainval.index,
+    )
+
+    # A small background sample keeps the explanation tractable.
+    background_size = min(100, len(train_scaled))
+    background = train_scaled.sample(background_size, random_state=RANDOM_STATE)
+
+    explainer = shap.LinearExplainer(clf, background)
+    shap_values = explainer(train_scaled)
+
+    importance_df = (
+        pd.DataFrame(
+            {
+                "feature": train_scaled.columns,
+                "mean_abs_shap": np.abs(shap_values.values).mean(axis=0),
+            }
+        )
+        .sort_values("mean_abs_shap", ascending=False)
+        .reset_index(drop=True)
+    )
+
+    print("\n" + "=" * 40)
+    print("SHAP mean absolute importance")
+    print(importance_df.to_string(index=False))
+
+    shap.plots.beeswarm(shap_values, max_display=len(train_scaled.columns), show=False)
+    plt.tight_layout()
+    plt.savefig(output_path / "shap_beeswarm.png", dpi=300, bbox_inches="tight")
+    plt.close()
+
+    shap.plots.bar(shap_values, max_display=len(train_scaled.columns), show=False)
+    plt.tight_layout()
+    plt.savefig(output_path / "shap_bar.png", dpi=300, bbox_inches="tight")
+    plt.close()
+
+    print(f"Saved SHAP plots to: {output_path.resolve()}")
+
+
 # Run nested cross-validation and return performance, selected features, and predictions.
 def run_nested_cv(X, y):
     # Create the outer cross-validation loop used for unbiased model evaluation.
@@ -321,7 +407,6 @@ def run_nested_cv(X, y):
         "feat_select__rfe_estimator_c": [0.1, 1, 10],
         "clf__kernel": ["linear", "rbf"],
         "clf__C": [0.1, 1, 10, 100],
-        "clf__gamma": ["scale", 0.1, 0.01, 0.001],
     }
 
     # Store the true labels from each outer validation fold.
@@ -332,6 +417,9 @@ def run_nested_cv(X, y):
 
     # Store the ROC-AUC of each outer fold separately.
     outer_fold_aucs = []
+
+    # Store the F-beta score of each outer fold separately.
+    outer_fold_fbetas = []
 
     # Store the selected features per fold so stability can be summarized later.
     features_per_fold = []
@@ -391,6 +479,9 @@ def run_nested_cv(X, y):
         # Generate decision scores for the unseen outer validation data.
         scores_outer = best_model.decision_function(X_outer_val)
 
+        # Generate hard class predictions for the F-beta score.
+        preds_outer = best_model.predict(X_outer_val)
+
         # Collect the true labels for the global nested ROC-AUC.
         all_y_outer.extend(y_outer_val)
 
@@ -419,8 +510,17 @@ def run_nested_cv(X, y):
         # Save the fold-specific ROC-AUC for later averaging.
         outer_fold_aucs.append(outer_fold_auc)
 
+        # Compute the fold-specific F-beta score from the class predictions.
+        outer_fold_fbeta = compute_fbeta_from_predictions(y_outer_val, preds_outer)
+
+        # Save the fold-specific F-beta score for later averaging.
+        outer_fold_fbetas.append(outer_fold_fbeta)
+
         # Print the fold ROC-AUC for transparency.
         print(f"Outer fold ROC-AUC: {outer_fold_auc:.3f}")
+
+        # Print the fold F-beta score for transparency.
+        print(f"Outer fold F{F_BETA}-score: {outer_fold_fbeta:.3f}")
 
     # Compute the overall nested CV ROC-AUC using all outer-fold predictions together.
     nested_auc = roc_auc_score(all_y_outer, all_scores_outer)
@@ -430,6 +530,18 @@ def run_nested_cv(X, y):
 
     # Compute the standard deviation of the outer-fold ROC-AUC values.
     outer_auc_std = float(np.std(outer_fold_aucs))
+
+    # Convert the collected outer-fold decision scores into class labels.
+    all_preds_outer = (np.array(all_scores_outer) >= 0).astype(int)
+
+    # Compute one overall nested F-beta score on all outer-fold predictions together.
+    nested_fbeta = compute_fbeta_from_predictions(all_y_outer, all_preds_outer)
+
+    # Compute the mean F-beta score over the outer folds.
+    outer_fbeta_mean = float(np.mean(outer_fold_fbetas))
+
+    # Compute the standard deviation of the outer-fold F-beta values.
+    outer_fbeta_std = float(np.std(outer_fold_fbetas))
 
     # Summarize how often features were selected across folds.
     feature_counts, consensus_features = summarize_feature_stability(
@@ -445,6 +557,9 @@ def run_nested_cv(X, y):
         nested_auc,
         outer_auc_mean,
         outer_auc_std,
+        nested_fbeta,
+        outer_fbeta_mean,
+        outer_fbeta_std,
         feature_counts,
         consensus_features,
         final_params,
@@ -478,8 +593,34 @@ def run_regular_cv(X, y, final_params):
         n_jobs=N_JOBS,
     )
 
-    # Return the mean and standard deviation of the regular 5-fold ROC-AUC.
-    return float(regular_cv_scores.mean()), float(regular_cv_scores.std())
+    # Evaluate the summarized pipeline with regular 5-fold CV using the F-beta score.
+    regular_cv_fbeta_scores = cross_val_score(
+        final_pipeline,
+        X,
+        y,
+        cv=regular_cv,
+        scoring=make_scorer(fbeta_score, beta=F_BETA, zero_division=0),
+        n_jobs=N_JOBS,
+    )
+
+    # Return the mean and standard deviation of the regular 5-fold metrics.
+    return (
+        float(regular_cv_scores.mean()),
+        float(regular_cv_scores.std()),
+        float(regular_cv_fbeta_scores.mean()),
+        float(regular_cv_fbeta_scores.std()),
+    )
+
+
+# Fit one final model on the train/validation data using the summarized best settings.
+def fit_final_model(X, y, final_params):
+    # Build the final pipeline and apply the chosen hyperparameters.
+    final_pipeline = build_pipeline()
+    final_pipeline.set_params(**final_params)
+
+    # Fit only on the train/validation data so the test set stays untouched.
+    final_pipeline.fit(X, y)
+    return final_pipeline
 
 
 # Load the data, run the evaluations, print results, and save the ROC curve.
@@ -493,20 +634,37 @@ def main():
     # Convert the target labels to binary integers.
     y = data["label"].map({"benign": 0, "malignant": 1})
 
-    # Run nested cross-validation on the full dataset.
+    # Split off a fully untouched final test set before any model selection happens.
+    X_trainval, X_test, y_trainval, y_test = train_test_split(
+        X,
+        y,
+        test_size=0.2,
+        stratify=y,
+        random_state=RANDOM_STATE,
+    )
+
+    # Run nested cross-validation only on the train/validation portion.
     (
         nested_auc,
         nested_outer_mean,
         nested_outer_std,
+        nested_fbeta,
+        nested_fbeta_mean,
+        nested_fbeta_std,
         feature_counts,
         consensus_features,
         final_params,
         all_y_outer,
         all_scores_outer,
-    ) = run_nested_cv(X, y)
+    ) = run_nested_cv(X_trainval, y_trainval)
 
-    # Run a separate regular 5-fold CV using the summarized hyperparameters.
-    regular_cv_mean, regular_cv_std = run_regular_cv(X, y, final_params)
+    # Run a separate regular 5-fold CV only on the train/validation portion.
+    (
+        regular_cv_mean,
+        regular_cv_std,
+        regular_cv_fbeta_mean,
+        regular_cv_fbeta_std,
+    ) = run_regular_cv(X_trainval, y_trainval, final_params)
 
     # Print a separator for the feature-stability summary.
     print("\n" + "=" * 40)
@@ -526,11 +684,8 @@ def main():
     # Print the global nested CV ROC-AUC based on all outer-fold predictions.
     print(f"Nested CV ROC-AUC: {nested_auc:.3f}")
 
-    # Print the average and spread of the outer-fold ROC-AUC values.
-    print(
-        f"Nested 5-fold ROC-AUC per outer fold: "
-        f"{nested_outer_mean:.3f} +/- {nested_outer_std:.3f}"
-    )
+    # Print the overall nested F-beta score based on all outer-fold predictions.
+    print(f"Nested CV F{F_BETA}-score: {nested_fbeta:.3f}")
 
     # Print the summarized best hyperparameters.
     print(f"Most common best params over outer folds: {final_params}")
@@ -538,7 +693,19 @@ def main():
     # Print the separate regular 5-fold CV result.
     print(f"5-fold CV ROC-AUC: {regular_cv_mean:.3f} +/- {regular_cv_std:.3f}")
 
-    # Save the ROC curve based on the nested CV outer-fold predictions.
+    # Print the separate regular 5-fold F-beta result.
+    print(
+        f"5-fold CV F{F_BETA}-score: "
+        f"{regular_cv_fbeta_mean:.3f} +/- {regular_cv_fbeta_std:.3f}"
+    )
+
+    # Train one model on the 80% training portion only for interpretation.
+    final_pipeline = fit_final_model(X_trainval, y_trainval, final_params)
+
+    # Run SHAP only on the 80% training portion; the 20% test set stays untouched.
+    run_shap_analysis(final_pipeline, X_trainval)
+
+    # Save the ROC curve based on the nested CV predictions from the 80% training portion.
     save_roc_curve(all_y_outer, all_scores_outer, nested_auc)
 
 
