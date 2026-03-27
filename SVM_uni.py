@@ -449,7 +449,7 @@ def SVM_Uni():
     )
 
     # 3. Run nested CV (of je bestaande functie)
-    nested_auc, nested_f2, fold_aucs, _ = run_nested_cv(X_trainval, y_trainval)
+    nested_auc, nested_nested_auc, nested_f2, fold_aucs, feature_counts, consensus_features, final_params = run_nested_cv(X_trainval, y_trainval)f2, fold_aucs, _ = run_nested_cv(X_trainval, y_trainval)
 
     # 4. Stop resultaten in dictionary
     results = {

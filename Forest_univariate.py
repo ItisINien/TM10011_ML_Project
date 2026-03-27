@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 from sklearn.metrics import make_scorer, fbeta_score
 
 
-# %% 1️⃣ CUSTOM TRANSFORMER VOOR CORR + CONSTANT FILTER
+# %% 1 CUSTOM TRANSFORMER VOOR CORR + CONSTANT FILTER
 class CorrAndSelect(BaseEstimator, TransformerMixin):
     def __init__(self, corr_threshold=0.9):
         self.corr_threshold = corr_threshold
@@ -46,19 +46,19 @@ class CorrAndSelect(BaseEstimator, TransformerMixin):
         X_filtered = X_const.drop(columns=self.to_drop_, errors='ignore')
         return X_filtered[self.features_]
 
-# %% 2️⃣ LOAD DATA
+# %% 2 LOAD DATA
 data = load_data()
 X = data.select_dtypes(include=[np.number])
 y = data['label'].map({'benign': 0, 'malignant': 1})
 
 f2_scorer = make_scorer(fbeta_score, beta=2)
 
-# %% 3️⃣ TRAIN/TEST SPLIT
+# %% 3 TRAIN/TEST SPLIT
 X_trainval, X_test, y_trainval, y_test = train_test_split(
     X, y, test_size=0.2, stratify=y, random_state=42
 )
 
-# %% 4️⃣ NESTED CV MET UNIVARIATE SELECTIE
+# %% 4 NESTED CV MET UNIVARIATE SELECTIE
 outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 inner_cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
 
@@ -134,7 +134,7 @@ for fold_idx, (outer_train_idx, outer_val_idx) in enumerate(outer_cv.split(X_tra
         'importance': importances
     }))
 
-# %% 5️⃣ NESTED CV SCORE
+# %% 6 NESTED CV SCORE
 nested_auc = roc_auc_score(all_y_outer, all_y_outer_proba)
 print(f"\nNested CV ROC-AUC: {nested_auc:.3f}")
 
@@ -156,4 +156,7 @@ def Forest_Uni():
     "fold_aucs_uni": (fold_aucs),
 }
     return results
+<<<<<<< HEAD
 
+=======
+>>>>>>> 5b2d9fe4a920357075e1b59dce975ffcd6f0862b
