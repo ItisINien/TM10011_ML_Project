@@ -20,7 +20,7 @@ from sklearn.model_selection import (
 )
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import RobustScaler
-from sklearn.svm import LinearSVC, SVC
+from sklearn.svm import LinearSVC
 
 from worcliver.load_data import load_data
 
@@ -46,6 +46,7 @@ SHAP_OUTPUT_DIR = "shap_outputs"
 
 # Give recall extra weight compared to precision in the F-beta score.
 F_BETA = 2
+NEAR_CONSTANT_IQR_THRESHOLD = 1e-8
 
 
 class CorrUnivariateOptimizationSelector(BaseEstimator, TransformerMixin):
@@ -99,8 +100,22 @@ class CorrUnivariateOptimizationSelector(BaseEstimator, TransformerMixin):
         # Remove constant features before any further selection step.
         X_non_constant = X_df.drop(columns=self.constant_features_, errors="ignore")
 
+        # Detect near-constant features using the interquartile range.
+        iqr_values = X_non_constant.quantile(0.75) - X_non_constant.quantile(0.25)
+
+        # Save near-constant feature names so we can drop them later too.
+        self.near_constant_features_ = X_non_constant.columns[
+            iqr_values <= NEAR_CONSTANT_IQR_THRESHOLD
+        ].to_list()
+
+        # Remove both constant and near-constant features before correlation filtering.
+        X_after_variation = X_non_constant.drop(
+            columns=self.near_constant_features_,
+            errors="ignore",
+        )
+
         # Compute the absolute Spearman correlation matrix.
-        corr_matrix = X_non_constant.corr(method="spearman").abs().fillna(0)
+        corr_matrix = X_after_variation.corr(method="spearman").abs().fillna(0)
 
         # Keep only the upper triangle so each feature pair is checked once.
         upper_triangle = corr_matrix.where(
@@ -115,7 +130,7 @@ class CorrUnivariateOptimizationSelector(BaseEstimator, TransformerMixin):
         ]
 
         # Remove the highly correlated features.
-        X_after_correlation = X_non_constant.drop(
+        X_after_correlation = X_after_variation.drop(
             columns=self.correlation_features_,
             errors="ignore",
         )
@@ -182,8 +197,14 @@ class CorrUnivariateOptimizationSelector(BaseEstimator, TransformerMixin):
         # Remove the constant features learned during fitting.
         X_non_constant = X_df.drop(columns=self.constant_features_, errors="ignore")
 
+        # Remove the near-constant features learned during fitting.
+        X_after_variation = X_non_constant.drop(
+            columns=self.near_constant_features_,
+            errors="ignore",
+        )
+
         # Remove the correlated features learned during fitting.
-        X_after_correlation = X_non_constant.drop(
+        X_after_correlation = X_after_variation.drop(
             columns=self.correlation_features_,
             errors="ignore",
         )
@@ -210,7 +231,14 @@ def build_pipeline():
                 ),
             ),
             ("scaler", RobustScaler()),
-            ("clf", SVC()),
+            (
+                "clf",
+                LinearSVC(
+                    dual=False,
+                    max_iter=10000,
+                    random_state=RANDOM_STATE,
+                ),
+            ),
         ]
     )
 
@@ -318,15 +346,14 @@ def compute_fbeta_from_predictions(y_true, y_pred, beta=F_BETA):
 
 # Explain the final trained model with SHAP values when possible.
 def run_shap_analysis(final_pipeline, X_trainval, output_dir=SHAP_OUTPUT_DIR):
-    # Skip SHAP gracefully when the optional dependency is unavailable.
     if shap is None:
-        print("\nSHAP analysis skipped: package 'shap' is not installed.")
+        print("SHAP is not installed; skipping SHAP analysis.")
         return
 
     # SHAP with LinearExplainer is only appropriate for a linear final SVM here.
     clf = final_pipeline.named_steps["clf"]
-    if clf.kernel != "linear":
-        print("\nSHAP analysis skipped: current final classifier is not linear.")
+    if not isinstance(clf, LinearSVC):
+        print("SHAP analysis skipped because the final classifier is not LinearSVC.")
         return
 
     # Reuse the fitted preprocessing steps from the final pipeline.
@@ -352,8 +379,12 @@ def run_shap_analysis(final_pipeline, X_trainval, output_dir=SHAP_OUTPUT_DIR):
     background_size = min(100, len(train_scaled))
     background = train_scaled.sample(background_size, random_state=RANDOM_STATE)
 
-    explainer = shap.LinearExplainer(clf, background)
-    shap_values = explainer(train_scaled)
+    try:
+        explainer = shap.LinearExplainer(clf, background)
+        shap_values = explainer(train_scaled)
+    except Exception as exc:
+        print(f"SHAP analysis skipped due to error: {exc}")
+        return
 
     importance_df = (
         pd.DataFrame(
@@ -405,7 +436,7 @@ def run_nested_cv(X, y):
         "feat_select__k_univariate": [10, 15, 20, 30],
         "feat_select__n_features_to_select": [3, 5, 8, 10],
         "feat_select__rfe_estimator_c": [0.1, 1, 10],
-        "clf__kernel": ["linear", "rbf"],
+        #"clf__kernel": ["linear", "rbf"],
         "clf__C": [0.1, 1, 10, 100],
     }
 
@@ -496,7 +527,8 @@ def run_nested_cv(X, y):
             "Features: "
             f"{X_outer_train.shape[1]} -> "
             f"{X_outer_train.shape[1] - len(selector.constant_features_)} (after constant) -> "
-            f"{X_outer_train.shape[1] - len(selector.constant_features_) - len(selector.correlation_features_)} (after correlation) -> "
+            f"{X_outer_train.shape[1] - len(selector.constant_features_) - len(selector.near_constant_features_)} (after low variation) -> "
+            f"{X_outer_train.shape[1] - len(selector.constant_features_) - len(selector.near_constant_features_) - len(selector.correlation_features_)} (after correlation) -> "
             f"{len(selector.univariate_features_)} (after univariate) -> "
             f"{len(selector.features_)} (after optimization)"
         )
