@@ -59,11 +59,23 @@ nested_auc_svm_uni = results["nested_auc_SVM_uni"]
 nested_f2_svm_uni = results["nested_f2_SVM_uni"]
 aucs_svm_uni = results["fold_aucs_SVM_uni"]
 
-print(f"Nested CV ROC-AUC Forest optimization selection: {nested_auc_svm_uni:.3f}")
-print(f"Nested CV F2-score optimization selection: {nested_f2_svm_uni:.3f}")
-print(f"Aucs 5-folds Forest optimization feature selection: {[round(float(x), 3) for x in aucs_svm_uni]}")
+print(f"Nested CV ROC-AUC SVM univariate selection: {nested_auc_svm_uni:.3f}")
+print(f"Nested CV F2-score SVM univariate selection: {nested_f2_svm_uni:.3f}")
+print(f"Aucs 5-folds SVM univariate feature selection: {[round(float(x), 3) for x in aucs_svm_uni]}")
 
 # %%
+from LG import Logistic_Uni
+
+results = Logistic_Uni()
+
+nested_auc_lg_uni = results["nested_auc_lg"]
+nested_f2_lg_uni = results["nested_f2_lg"]
+aucs_lg_uni = results["fold_aucs_lg"]
+
+print(f"Nested CV ROC-AUC LG univariate selection: {nested_auc_lg_uni:.3f}")
+print(f"Nested CV F2-score LG univariate selection: {nested_f2_lg_uni:.3f}")
+print(f"Aucs 5-folds LG univariate feature selection: {[round(float(x), 3) for x in aucs_lg_uni]}")
+
 # %% BOXPLOT VAN 5-FOLD AUCs
 
 import matplotlib.pyplot as plt
