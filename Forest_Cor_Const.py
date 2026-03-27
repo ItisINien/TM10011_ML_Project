@@ -250,7 +250,7 @@ def Forest_const_cor(test=False):
 
     if test:
         test_auc = roc_auc_score(y_test, test_scores)
-        test_pred = (test_scores > 0).astype(int)
+        test_pred = (test_scores > 0.5).astype(int)  # juiste threshold
         test_f2 = fbeta_score(y_test, test_pred, beta=2)
 
         results["test_auc"] = float(test_auc)
