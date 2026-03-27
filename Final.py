@@ -118,7 +118,6 @@ print("Nested AUC:", round(nested_aucs[best_model_name], 3))
 # %%
 # %% TESTSET EVALUATION
 
-
 if best_model_name == "RF Const+Corr":
     from Forest_Cor_Const import Forest_const_cor
     results = Forest_const_cor(test=True)
