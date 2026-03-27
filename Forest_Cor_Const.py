@@ -14,6 +14,7 @@ from sklearn.metrics import make_scorer, fbeta_score
 from sklearn.metrics import roc_curve, auc
 from collections import Counter
 from sklearn.model_selection import RepeatedStratifiedKFold
+import matplotlib.pyplot as plt
 
 
 # %% 1 CUSTOM TRANSFORMER VOOR CORR + SELECTK
