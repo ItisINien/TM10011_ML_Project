@@ -137,4 +137,3 @@ elif best_model_name == "LG Univariate":
 
 print("\nTest set results:")
 print("Test ROC-AUC:", round(results["test_auc"], 3))
-print("Test F2:", round(results["test_f2"], 3))

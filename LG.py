@@ -389,7 +389,7 @@ def main():
     X = data.select_dtypes(include=[np.number]).copy()
     y = data["label"].map({"benign": 0, "malignant": 1})
 
-    X_trainval, _, y_trainval, _ = train_test_split(
+    X_trainval, X_test, y_trainval, y_test = train_test_split(
         X,
         y,
         test_size=0.2,
@@ -455,14 +455,14 @@ if __name__ == "__main__":
     main()
 
 # %%
-def Logistic_Uni():
+def Logistic_Uni(test=False):
     # 1. Laad de data
     data = load_data()
     X = data.select_dtypes(include=[np.number]).copy()
     y = data["label"].map({"benign": 0, "malignant": 1})
 
     # 2. Train/test split
-    X_trainval, _, y_trainval, _ = train_test_split(
+    X_trainval, X_test, y_trainval, y_test = train_test_split(
         X, y, test_size=0.2, stratify=y, random_state=RANDOM_STATE
     )
 
@@ -500,5 +500,20 @@ def Logistic_Uni():
         "common_params_lg": nested_results["common_params"],
         "features_per_fold_lg": nested_results["features_per_fold"],
     }
+    # Train final model on full trainval set
+    final_pipeline.fit(X_trainval, y_trainval)
+
+# Predict on test set
+    test_scores = final_pipeline.predict_proba(X_test)[:,1]
+
+    test_pred = (test_scores > 0.5).astype(int)    
+
+    if test:
+        test_auc = roc_auc_score(y_test, test_scores)
+        test_pred = (test_scores > 0.5).astype(int)  # juiste threshold
+        test_f2 = fbeta_score(y_test, test_pred, beta=2)
+
+        results["test_auc"] = float(test_auc)
+        results["test_f2"] = float(test_f2)
 
     return results

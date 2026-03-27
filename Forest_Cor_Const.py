@@ -240,17 +240,12 @@ def Forest_const_cor(test=False):
 
 }
 
-# Train final model on full trainval set
-    best_model.fit(X_trainval, y_trainval)
-
-# Predict on test set
-    test_scores = best_model.predict_proba(X_test)[:,1]
-
-    test_pred = (test_scores > 0.5).astype(int)    
+    pipeline_final.fit(X_trainval, y_trainval)
 
     if test:
+        test_scores = pipeline_final.predict_proba(X_test)[:,1]
+        test_pred = (test_scores > 0.5).astype(int)
         test_auc = roc_auc_score(y_test, test_scores)
-        test_pred = (test_scores > 0.5).astype(int)  # juiste threshold
         test_f2 = fbeta_score(y_test, test_pred, beta=2)
 
         results["test_auc"] = float(test_auc)

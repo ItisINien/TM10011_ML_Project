@@ -148,11 +148,27 @@ print(f"\nNested CV F2-score: {nested_f2:.3f}")
 
 
 # %%
-def Forest_Uni():
+def Forest_Uni(test=False):
 
     results = {
     "nested_auc_uni": float(nested_auc),
     "nested_f2_uni": float(nested_f2),
     "fold_aucs_uni": (fold_aucs),
 }
+    
+    # Train final model on full trainval set
+    best_model.fit(X_trainval, y_trainval)
+
+# Predict on test set
+    test_scores = best_model.predict_proba(X_test)[:,1]
+
+    test_pred = (test_scores > 0.5).astype(int)    
+
+    if test:
+        test_auc = roc_auc_score(y_test, test_scores)
+        test_pred = (test_scores > 0.5).astype(int)  # juiste threshold
+        test_f2 = fbeta_score(y_test, test_pred, beta=2)
+
+        results["test_auc"] = float(test_auc)
+        results["test_f2"] = float(test_f2)
     return results
