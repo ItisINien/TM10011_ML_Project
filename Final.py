@@ -82,10 +82,11 @@ import matplotlib.pyplot as plt
 
 # Verzamel alle AUCs per methode in een dict
 aucs_dict = {
-    "Random Forest Univariate": aucs_forest_uni,
-    "Random Forest Const+Corr": aucs_forest_const_cor,
-    "Random Forest No selection": aucs_forest_only,
-    "SVM Univariate": aucs_svm_uni
+    "RF Univariate": aucs_forest_uni,
+    "RF Const+Corr": aucs_forest_const_cor,
+    "RF No selection": aucs_forest_only,
+    "SVM Univariate": aucs_svm_uni,
+    "LG Univar + Optimisation": aucs_lg_uni,
     # Voeg hier eventueel nieuwe methodes toe of comment uit wat je niet wil plotten
     # "Nieuwe methode": aucs_nieuw
 }
@@ -98,3 +99,41 @@ plt.ylabel("ROC-AUC per fold")
 plt.title("5-fold ROC-AUC comparison per method")
 plt.grid(axis='y', linestyle='--', alpha=0.7)
 plt.show()
+
+# %%
+# %% SELECT BEST MODEL BASED ON NESTED AUC
+
+nested_aucs = {
+    "RF Const+Corr": nested_auc_forest_const_cor,
+    "RF No selection": nested_auc_forest_only,
+    "SVM Univariate": nested_auc_svm_uni,
+    "LG Univariate": nested_auc_lg_uni
+}
+
+best_model_name = max(nested_aucs, key=nested_aucs.get)
+
+print("\nBest model based on nested CV AUC:", best_model_name)
+print("Nested AUC:", round(nested_aucs[best_model_name], 3))
+
+# %%
+# %% TESTSET EVALUATION
+
+if best_model_name == "RF Const+Corr":
+    from Forest_Cor_Const import Forest_const_cor
+    results = Forest_const_cor(test=True)
+
+elif best_model_name == "RF No selection":
+    from Forest_Only import Forest_Only_results
+    results = Forest_Only_results(test=True)
+
+elif best_model_name == "SVM Univariate":
+    from SVM_uni import SVM_Uni
+    results = SVM_Uni(test=True)
+
+elif best_model_name == "LG Univariate":
+    from LG import Logistic_Uni
+    results = Logistic_Uni(test=True)
+
+print("\nTest set results:")
+print("Test ROC-AUC:", round(results["test_auc"], 3))
+print("Test F2:", round(results["test_f2"], 3))

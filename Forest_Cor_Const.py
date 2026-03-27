@@ -231,7 +231,7 @@ for param, value in pipeline_final.named_steps['clf'].get_params().items():
 
 
 # %%
-def Forest_const_cor():
+def Forest_const_cor(test=False):
 
     results = {
     "nested_auc_const_cor": float(roc_auc),
@@ -239,4 +239,13 @@ def Forest_const_cor():
     "fold_aucs_const_cor": (fold_aucs),
 
 }
+    
+    if test:
+    test_auc = roc_auc_score(y_test, test_scores)
+    test_pred = (test_scores > 0).astype(int)
+    test_f2 = fbeta_score(y_test, test_pred, beta=2)
+
+    results["test_auc"] = float(test_auc)
+    results["test_f2"] = float(test_f2)
+
     return results

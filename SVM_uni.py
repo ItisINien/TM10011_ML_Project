@@ -422,7 +422,7 @@ def main():
 
 
 # %%
-def SVM_Uni():
+def SVM_Uni(test=False):
     # 1. Laad de data
     data = load_data()
     X = data.select_dtypes(include=[np.number]).copy()
@@ -441,6 +441,14 @@ def SVM_Uni():
         "nested_f2_SVM_uni": float(nested_f2),
         "fold_aucs_SVM_uni": fold_aucs,
     }
+
+    if test:
+    test_auc = roc_auc_score(y_test, test_scores)
+    test_pred = (test_scores > 0).astype(int)
+    test_f2 = fbeta_score(y_test, test_pred, beta=2)
+    results["test_auc"] = float(test_auc)
+    results["test_f2"] = float(test_f2)
+
     return results
 
 # %%
