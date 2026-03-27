@@ -266,7 +266,69 @@ def run_shap_analysis(final_pipeline, X_trainval, X_test, output_dir="shap_outpu
     print(f"Saved SHAP plots to: {output_path.resolve()}")
 
 
-def save_roc_curve(y_true, y_scores, roc_auc, output_path="roc_curve_final_test.png"):
+def run_nested_shap_analysis(nested_shap_payload, output_dir="shap_outputs_nested_cv_svm"):
+    if shap is None:
+        print("\nNested SHAP analysis skipped: package 'shap' is not installed.")
+        return
+
+    if not nested_shap_payload:
+        print("\nNested SHAP analysis skipped: no SHAP payload available.")
+        return
+
+    all_features = sorted(
+        {
+            feature
+            for fold_payload in nested_shap_payload
+            for feature in fold_payload["feature_names"]
+        }
+    )
+    if not all_features:
+        print("\nNested SHAP analysis skipped: no features available.")
+        return
+
+    output_path = Path(output_dir)
+    output_path.mkdir(exist_ok=True)
+
+    combined_shap_frames = []
+
+    for fold_payload in nested_shap_payload:
+        feature_names = fold_payload["feature_names"]
+        shap_frame = pd.DataFrame(
+            fold_payload["shap_values"],
+            columns=feature_names,
+            index=fold_payload["index"],
+        ).reindex(columns=all_features, fill_value=0.0)
+
+        combined_shap_frames.append(shap_frame)
+
+    combined_shap = pd.concat(combined_shap_frames, axis=0).sort_index()
+
+    importance_df = (
+        pd.DataFrame(
+            {
+                "feature": all_features,
+                "mean_abs_shap": np.abs(combined_shap.to_numpy()).mean(axis=0),
+            }
+        )
+        .sort_values("mean_abs_shap", ascending=False)
+        .reset_index(drop=True)
+    )
+
+    importance_df.to_csv(output_path / "nested_shap_importance.csv", index=False)
+
+    print("\n" + "=" * 40)
+    print("Nested CV SHAP mean absolute importance")
+    print(importance_df.to_string(index=False))
+    print(f"Saved nested SHAP summary to: {output_path.resolve()}")
+
+
+def save_roc_curve(
+    y_true,
+    y_scores,
+    roc_auc,
+    output_path="roc_curve_final_test.png",
+    title="ROC Curve",
+):
     fpr, tpr, _ = roc_curve(y_true, y_scores)
 
     plt.figure(figsize=(6, 6))
@@ -274,7 +336,7 @@ def save_roc_curve(y_true, y_scores, roc_auc, output_path="roc_curve_final_test.
     plt.plot([0, 1], [0, 1], linestyle="--", color="gray", label="Chance")
     plt.xlabel("False Positive Rate")
     plt.ylabel("True Positive Rate")
-    plt.title("Final Test ROC Curve")
+    plt.title(title)
     plt.legend(loc="lower right")
     plt.tight_layout()
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
@@ -301,6 +363,7 @@ def run_nested_cv(X_trainval, y_trainval):
     all_fold_scores = []
     all_fold_y = []
     fold_aucs = []
+    nested_shap_payload = []
 
     f2_score = make_scorer(fbeta_score, beta=2)
 
@@ -343,6 +406,44 @@ def run_nested_cv(X_trainval, y_trainval):
         fold_auc = roc_auc_score(y_outer_val, scores_outer)
         fold_aucs.append(fold_auc)
 
+        if shap is not None and best_model.named_steps["clf"].kernel == "linear":
+            selector = best_model.named_steps["feat_select"]
+            scaler = best_model.named_steps["scaler"]
+
+            train_selected = pd.DataFrame(
+                selector.transform(X_outer_train),
+                columns=selector.features_,
+                index=X_outer_train.index,
+            )
+            shap_selected = pd.DataFrame(
+                selector.transform(X_outer_train),
+                columns=selector.features_,
+                index=X_outer_train.index,
+            )
+            train_scaled = pd.DataFrame(
+                scaler.transform(train_selected),
+                columns=selector.features_,
+                index=X_outer_train.index,
+            )
+            shap_scaled = pd.DataFrame(
+                scaler.transform(shap_selected),
+                columns=selector.features_,
+                index=X_outer_train.index,
+            )
+
+            background_size = min(100, len(train_scaled))
+            background = train_scaled.sample(background_size, random_state=RANDOM_STATE)
+            explainer = shap.LinearExplainer(best_model.named_steps["clf"], background)
+            shap_values = explainer(shap_scaled)
+
+            nested_shap_payload.append(
+                {
+                    "feature_names": selector.features_,
+                    "shap_values": shap_values.values,
+                    "index": shap_scaled.index,
+                }
+            )
+
     # na de loop
     nested_auc = roc_auc_score(all_y_outer, all_scores_outer)
 
@@ -355,7 +456,17 @@ def run_nested_cv(X_trainval, y_trainval):
     )
     final_params = summarize_params(best_params_per_fold)
 
-    return nested_auc, nested_f2, fold_aucs, feature_counts, consensus_features, final_params
+    return (
+        nested_auc,
+        nested_f2,
+        fold_aucs,
+        feature_counts,
+        consensus_features,
+        final_params,
+        np.array(all_y_outer),
+        np.array(all_scores_outer),
+        nested_shap_payload,
+    )
 def main():
     data = load_data()
     X = data.select_dtypes(include=[np.number]).copy()
@@ -369,7 +480,17 @@ def main():
         random_state=RANDOM_STATE,
     )
 
-    nested_auc, nested_f2, fold_aucs, feature_counts, consensus_features, final_params = run_nested_cv(X_trainval, y_trainval)
+    (
+        nested_auc,
+        nested_f2,
+        fold_aucs,
+        feature_counts,
+        consensus_features,
+        final_params,
+        all_y_outer,
+        all_scores_outer,
+        nested_shap_payload,
+    ) = run_nested_cv(X_trainval, y_trainval)
 
 
     print("\n" + "=" * 40)
@@ -379,6 +500,7 @@ def main():
 
     print("\n" + "=" * 40)
     print(f"Nested CV ROC-AUC: {nested_auc:.3f}")
+    print(f"Nested CV F2-score: {nested_f2:.3f}")
     print(f"Most common best params over outer folds: {final_params}")
 
     final_pipeline = build_pipeline()
@@ -400,23 +522,14 @@ def main():
         f"+/- {regular_cv_scores.std():.3f}"
     )
 
-    final_pipeline.fit(X_trainval, y_trainval)
-    test_scores = final_pipeline.decision_function(X_test)
-    test_auc = roc_auc_score(y_test, test_scores)
-
-    final_selected_features = final_pipeline.named_steps["feat_select"].features_
-    final_univariate_features = (
-        final_pipeline.named_steps["feat_select"].univariate_features_
+    save_roc_curve(
+        all_y_outer,
+        all_scores_outer,
+        nested_auc,
+        output_path="roc_curve_nested_cv_svm_uni.png",
+        title="Nested CV ROC Curve (SVM Univariate)",
     )
-
-    print("\n" + "=" * 40)
-    print(f"Final test ROC-AUC: {test_auc:.3f}")
-    print(f"Final univariate features ({len(final_univariate_features)}):")
-    print(final_univariate_features)
-    print(f"Final selected features ({len(final_selected_features)}):")
-    print(final_selected_features)
-    save_roc_curve(y_test, test_scores, test_auc)
-    run_shap_analysis(final_pipeline, X_trainval, X_test)
+    run_nested_shap_analysis(nested_shap_payload)
 
 
 
@@ -434,7 +547,17 @@ def SVM_Uni(test=False):
     )
 
     # 3. Run nested CV 
-    nested_auc, nested_f2, fold_aucs, f_counts, c_features, f_params = run_nested_cv(X_trainval, y_trainval)
+    (
+        nested_auc,
+        nested_f2,
+        fold_aucs,
+        f_counts,
+        c_features,
+        f_params,
+        all_y_outer,
+        all_scores_outer,
+        nested_shap_payload,
+    ) = run_nested_cv(X_trainval, y_trainval)
     # 4. Stop resultaten in dictionary
     results = {
         "nested_auc_SVM_uni": float(nested_auc),
@@ -442,12 +565,27 @@ def SVM_Uni(test=False):
         "fold_aucs_SVM_uni": fold_aucs,
     }
 
+    save_roc_curve(
+        all_y_outer,
+        all_scores_outer,
+        nested_auc,
+        output_path="roc_curve_nested_cv_svm_uni.png",
+        title="Nested CV ROC Curve (SVM Univariate)",
+    )
+    run_nested_shap_analysis(nested_shap_payload)
+
     if test:
+        final_pipeline = build_pipeline()
+        final_pipeline.set_params(**f_params)
+        final_pipeline.fit(X_trainval, y_trainval)
+        test_scores = final_pipeline.decision_function(X_test)
         test_auc = roc_auc_score(y_test, test_scores)
         test_pred = (test_scores > 0).astype(int)
         test_f2 = fbeta_score(y_test, test_pred, beta=2)
         results["test_auc"] = float(test_auc)
         results["test_f2"] = float(test_f2)
+        results["test_scores"] = test_scores
+        results["y_test"] = y_test.to_numpy()
 
     return results
 
