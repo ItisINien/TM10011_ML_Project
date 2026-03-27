@@ -1,7 +1,0 @@
-# %%
-from Forest_univariate import run_nested_cv
-
-nested_auc, nested_f2 = run_nested_cv()
-
-print(f"Nested CV ROC-AUC: {nested_auc:.3f}")
-print(f"Nested CV F2-score: {nested_f2:.3f}")

@@ -75,7 +75,7 @@ all_y_outer_proba = []
 
 feature_importances_list = []
 best_params_list = []
-
+fold_aucs = []
 
 for outer_train_idx, outer_val_idx in outer_cv.split(X_trainval, y_trainval):
     X_outer_train = X_trainval.iloc[outer_train_idx].copy()
@@ -105,7 +105,7 @@ for outer_train_idx, outer_val_idx in outer_cv.split(X_trainval, y_trainval):
         n_iter=30,           
         cv=inner_cv,
         scoring=f2_scorer,
-        n_jobs=-1,
+        n_jobs=1,
         random_state=42)
     
     grid_search.fit(X_outer_train, y_outer_train)
@@ -137,6 +137,7 @@ for outer_train_idx, outer_val_idx in outer_cv.split(X_trainval, y_trainval):
     all_y_outer_proba.extend(y_outer_proba)
 
     fold_auc = roc_auc_score(y_outer_val, y_outer_proba)
+    fold_aucs.append(fold_auc)
     print(f"Outer fold AUC: {fold_auc:.3f}")
 
     # Feature importances opslaan (alleen geselecteerde features)
@@ -263,3 +264,15 @@ plt.show()
 print("\nGekozen hyperparameters RandomForest final model:")
 for param, value in pipeline_final.named_steps['clf'].get_params().items():
     print(f"{param}: {value}")
+
+
+# %%
+def Forest_const_cor():
+
+    results = {
+    "nested_auc_const_cor": float(roc_auc),
+    "nested_f2_const_cor": float(nested_f2),
+    "fold_aucs_const_cor": float(fold_aucs),
+
+}
+    return results

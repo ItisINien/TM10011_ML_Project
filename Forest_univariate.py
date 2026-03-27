@@ -9,7 +9,6 @@ from sklearn.pipeline import Pipeline
 from sklearn.metrics import roc_auc_score
 from sklearn.base import BaseEstimator, TransformerMixin
 from worcliver.load_data import load_data
-import shap
 import matplotlib.pyplot as plt
 from sklearn.metrics import make_scorer, fbeta_score
 
@@ -66,6 +65,7 @@ inner_cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
 all_y_outer = []
 all_y_outer_proba = []
 feature_importances_list = []
+fold_aucs = []
 
 k_univar = 10  # top univariate features
 
@@ -100,7 +100,7 @@ for fold_idx, (outer_train_idx, outer_val_idx) in enumerate(outer_cv.split(X_tra
         n_iter=30,  # sneller
         cv=inner_cv,
         scoring=f2_scorer,
-        n_jobs=-1,
+        n_jobs=1,
         random_state=42
     )
 
@@ -120,7 +120,9 @@ for fold_idx, (outer_train_idx, outer_val_idx) in enumerate(outer_cv.split(X_tra
 
     all_y_outer.extend(y_outer_val)
     all_y_outer_proba.extend(y_outer_proba)
+
     fold_auc = roc_auc_score(y_outer_val, y_outer_proba)
+    fold_aucs.append(fold_auc)
     print(f"Outer fold AUC: {fold_auc:.3f}")
     print(f"Best params: {grid_search.best_params_}")
 
@@ -146,68 +148,11 @@ print(f"\nNested CV F2-score: {nested_f2:.3f}")
 
 
 # %%
-def run_nested_cv():
+def Forest_Uni():
 
-    # % LOAD DATA
-    data = load_data()
-    X = data.select_dtypes(include=[np.number])
-    y = data['label'].map({'benign': 0, 'malignant': 1})
-
-    f2_scorer = make_scorer(fbeta_score, beta=2)
-
-    # TRAIN TEST
-    X_trainval, X_test, y_trainval, y_test = train_test_split(
-        X, y, test_size=0.2, stratify=y, random_state=42
-    )
-
-    outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-    inner_cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
-
-    all_y_outer = []
-    all_y_outer_proba = []
-
-    for fold_idx, (outer_train_idx, outer_val_idx) in enumerate(outer_cv.split(X_trainval, y_trainval), 1):
-
-        X_outer_train = X_trainval.iloc[outer_train_idx].copy()
-        X_outer_val = X_trainval.iloc[outer_val_idx].copy()
-        y_outer_train = y_trainval.iloc[outer_train_idx]
-        y_outer_val = y_trainval.iloc[outer_val_idx]
-
-        pipeline = Pipeline([
-            ("feat_select", CorrAndSelect(corr_threshold=0.9)),
-            ("scaler", RobustScaler()),
-            ("select_k", SelectKBest(score_func=f_classif)),
-            ("clf", RandomForestClassifier(random_state=42))
-        ])
-
-        param_dist = {
-            "select_k__k": [5, 10, 20, 30, 50],
-            "clf__n_estimators": [100,200,300,500],
-            "clf__max_depth": [None,5,10,20],
-            "clf__min_samples_split": [2,5,10]
-        }
-
-        grid_search = RandomizedSearchCV(
-            estimator=pipeline,
-            param_distributions=param_dist,
-            n_iter=30,
-            cv=inner_cv,
-            scoring=f2_scorer,
-            n_jobs=-1,
-            random_state=42
-        )
-
-        grid_search.fit(X_outer_train, y_outer_train)
-
-        best_model = grid_search.best_estimator_
-        y_outer_proba = best_model.predict_proba(X_outer_val)[:,1]
-
-        all_y_outer.extend(y_outer_val)
-        all_y_outer_proba.extend(y_outer_proba)
-
-    nested_auc = roc_auc_score(all_y_outer, all_y_outer_proba)
-
-    y_pred = (np.array(all_y_outer_proba) >= 0.5).astype(int)
-    nested_f2 = fbeta_score(all_y_outer, y_pred, beta=2)
-
-    return nested_auc, nested_f2
+    results = {
+    "nested_auc_uni": float(nested_auc),
+    "nested_f2_uni": float(nested_f2),
+    "fold_aucs_uni": float(fold_aucs),
+}
+    return results

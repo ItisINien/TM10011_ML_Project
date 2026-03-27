@@ -9,9 +9,9 @@ from sklearn.metrics import roc_auc_score
 from worcliver.load_data import load_data
 import shap
 from sklearn.metrics import make_scorer, fbeta_score
-
+import matplotlib.pyplot as plt
     
-    # %% 2️⃣ LOAD DATA
+# %%  Load data and define F2
 data = load_data()
 X = data.select_dtypes(include=[np.number])
 y = data['label'].map({'benign': 0, 'malignant': 1})
@@ -19,12 +19,12 @@ y = data['label'].map({'benign': 0, 'malignant': 1})
 f2_scorer = make_scorer(fbeta_score, beta=2)
 
 
-# %% 3️⃣ TRAIN/TEST SPLIT
+# %% train/test split (80/20)
 X_trainval, X_test, y_trainval, y_test = train_test_split(
     X, y, test_size=0.2, stratify=y, random_state=42
 )
 
-# %% 4️⃣ NESTED CV
+# %% Nested CV and Grindsearch
 outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 inner_cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
 
@@ -32,7 +32,7 @@ all_y_outer = []
 all_y_outer_proba = []
 
 feature_importances_list = []
-
+fold_aucs = []
 
 for outer_train_idx, outer_val_idx in outer_cv.split(X_trainval, y_trainval):
     X_outer_train = X_trainval.iloc[outer_train_idx].copy()
@@ -56,8 +56,7 @@ for outer_train_idx, outer_val_idx in outer_cv.split(X_trainval, y_trainval):
     grid_search = RandomizedSearchCV(
         estimator=pipeline,
         param_distributions=param_dist,
-        n_iter=100,           # Hij probeert nu maar 30 willekeurige combinaties per inner fold
-        cv=inner_cv,
+        n_iter=100,           
         scoring=f2_scorer,
         n_jobs=-1,
         random_state=42)
@@ -66,18 +65,17 @@ for outer_train_idx, outer_val_idx in outer_cv.split(X_trainval, y_trainval):
     print(f"Outer fold best params: {grid_search.best_params_}")
     print(f"Outer fold best inner CV ROC-AUC: {grid_search.best_score_:.3f}")
 
-    # Beste model toepassen op outer validation fold
+    # Beste model on outer validation fold
     best_model = grid_search.best_estimator_
     y_outer_proba = best_model.predict_proba(X_outer_val)[:,1]
-
 
     all_y_outer.extend(y_outer_val)
     all_y_outer_proba.extend(y_outer_proba)
 
     fold_auc = roc_auc_score(y_outer_val, y_outer_proba)
+    fold_aucs.append(fold_auc)
     print(f"Outer fold AUC: {fold_auc:.3f}")
 
-    # Haal alle feature namen uit de training data
     selected_features = X_outer_train.columns
     importances = best_model.named_steps['clf'].feature_importances_
 
@@ -86,11 +84,11 @@ for outer_train_idx, outer_val_idx in outer_cv.split(X_trainval, y_trainval):
         'importance': importances
         }))
 
-# %% 5️⃣ EVALUATE NESTED CV
+# %% Evaluation nested CV with ROC_AUC and F2
+
+#ROC-AUC
 roc_auc = roc_auc_score(all_y_outer, all_y_outer_proba)
 print(f"Nested CV ROC-AUC: {roc_auc:.3f}")
-
-from sklearn.metrics import fbeta_score
 
 # probabilities -> class labels
 y_pred = (np.array(all_y_outer_proba) >= 0.5).astype(int)
@@ -99,49 +97,34 @@ y_pred = (np.array(all_y_outer_proba) >= 0.5).astype(int)
 nested_f2 = fbeta_score(all_y_outer, y_pred, beta=2)
 print(f"\nNested CV F2-score: {nested_f2:.3f}")
 
-# %% 6️⃣ FEATURE IMPORTANCE OVER ALLE FOLDS
-feature_importance_df = pd.concat(feature_importances_list)
-feature_importance_mean = feature_importance_df.groupby('feature')['importance'].mean().sort_values(ascending=False)
-
-threshold = 0.01
-interesting_features = feature_importance_mean[feature_importance_mean > threshold]
-print(f"Aantal belangrijke features: {len(interesting_features)}")
-
-import matplotlib.pyplot as plt
-plt.figure(figsize=(10,6))
-plt.barh(feature_importance_mean.index[:20][::-1], feature_importance_mean.values[:20][::-1])
-plt.xlabel('Mean Feature Importance over folds')
-plt.title('Top 20 features RandomForest')
-plt.show()
-
-# %%
-# Transformeer features zoals gebruikt in model
-# Als er geen feature selectie is, gebruik dan gewoon alle kolommen van X_outer_train
+# %% SHAP
 X_model = X_outer_train.copy()
 
 explainer = shap.TreeExplainer(best_model.named_steps['clf'])
+
+#SHAP value per feature per sample
 shap_values = explainer.shap_values(X_model)
 
 # Handle different SHAP output formats
 if isinstance(shap_values, list):
-    # Older SHAP: list van arrays per klasse → neem klasse 1
+    # Older SHAP: list van arrays per klasse →  klasse 1
     shap_vals = np.array(shap_values[1])
 elif shap_values.ndim == 3:
-    # Nieuwere SHAP: (n_samples, n_features, n_classes) → neem klasse 1
+    # Newer SHAP: (n_samples, n_features, n_classes) → take klasse 1
     shap_vals = shap_values[:, :, 1]
 else:
     shap_vals = shap_values
 
 print("SHAP array shape:", shap_vals.shape)  # (n_samples, n_features)
 
-# Gemiddelde absolute SHAP per feature → 1D
+# Mean absolute SHAP per feature → 1D
 mean_abs_shap = np.abs(shap_vals).mean(axis=0)
 
-# Controleer dat het aantal features klopt
+# Check amount of features
 assert mean_abs_shap.shape[0] == X_model.shape[1], \
     f"Feature mismatch: {mean_abs_shap.shape[0]} vs {X_model.shape[1]}"
 
-# DataFrame maken en sorteren
+# DataFrame 
 shap_importance = pd.DataFrame({
     "feature": X_model.columns,
     "mean_abs_shap": mean_abs_shap
@@ -151,10 +134,19 @@ shap_importance = pd.DataFrame({
 print(shap_importance.head(20))
 
 # Plot top 20
-import matplotlib.pyplot as plt
 plt.figure(figsize=(10,6))
 plt.barh(shap_importance.head(20).feature[::-1], 
          shap_importance.head(20).mean_abs_shap[::-1])
 plt.xlabel("Mean Absolute SHAP Value")
 plt.title("Top 20 SHAP Feature Importance")
 plt.show()
+
+# %%
+# %% FUNCTION FOR NESTED CV RESULTS
+def Forest_Only_results():
+    results = {
+        "nested_auc_only": float(roc_auc),
+        "nested_f2_only": float(nested_f2),
+        "fold_aucs_only": fold_aucs,  # laat dit als lijst
+    }
+    return results
