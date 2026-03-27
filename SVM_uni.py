@@ -288,10 +288,10 @@ def run_nested_cv(X_trainval, y_trainval):
     inner_cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=RANDOM_STATE)
 
     param_dist = {
-        "feat_select__corr_threshold": [0.8, 0.85, 0.9],  # Drempel voor wanneer twee features te sterk correleren.
-        "feat_select__k_univariate": [10, 15],  # Aantal features dat na ANOVA univariate selectie overblijft.
-        "feat_select__consensus_min_fraction": [0.6, 0.8],  # Alleen features behouden die in meerdere consensus-folds terugkomen.
-        "clf__C": [0.01, 0.1, 1, 10],  # Lage tot matig hoge C houdt regularisatie aanwezig, maar geeft iets meer ruimte dan de strengste setting.
+        "feat_select__corr_threshold": [0.8, 0.85, 0.9],
+        "feat_select__k_univariate": [10, 15],
+        "feat_select__consensus_min_fraction": [0.6, 0.8],
+        "clf__C": [0.01, 0.1, 1, 10],
     }
 
     all_y_outer = []
@@ -300,6 +300,7 @@ def run_nested_cv(X_trainval, y_trainval):
     best_params_per_fold = []
     all_fold_scores = []
     all_fold_y = []
+    fold_aucs = []
 
     f2_score = make_scorer(fbeta_score, beta=2)
 
@@ -308,8 +309,6 @@ def run_nested_cv(X_trainval, y_trainval):
     for fold_idx, (outer_train_idx, outer_val_idx) in enumerate(
         outer_cv.split(X_trainval, y_trainval), start=1
     ):
-        print(f"\n--- Outer fold {fold_idx} ---")
-
         X_outer_train = X_trainval.iloc[outer_train_idx].copy()
         X_outer_val = X_trainval.iloc[outer_val_idx].copy()
         y_outer_train = y_trainval.iloc[outer_train_idx]
@@ -318,7 +317,7 @@ def run_nested_cv(X_trainval, y_trainval):
         search = RandomizedSearchCV(
             estimator=build_pipeline(),
             param_distributions=param_dist,
-            n_iter=20,  # Test 20 willekeurige hyperparametercombinaties per outer fold.
+            n_iter=20,
             cv=inner_cv,
             scoring=f2_score,
             n_jobs=-1,
@@ -336,42 +335,27 @@ def run_nested_cv(X_trainval, y_trainval):
         all_y_outer.extend(y_outer_val)
         all_scores_outer.extend(scores_outer)
 
-        print(f"Best params: {search.best_params_}")
-        print(
-            "Features: "
-            f"{X_outer_train.shape[1]} -> "
-            f"{X_outer_train.shape[1] - len(selector.constant_features_)} (after constant) -> "
-            f"{X_outer_train.shape[1] - len(selector.constant_features_) - len(selector.correlation_features_)} (after correlation) -> "
-            f"{len(selector.univariate_features_)} (after univariate) -> "
-            f"{len(selector.features_)} (after consensus)"
-        )
-        print(f"Selected features: {selector.features_}")
-        print(
-            f"Outer fold ROC-AUC: "
-            f"{roc_auc_score(y_outer_val, scores_outer):.3f}"
-        )
-    # na het berekenen van scores_outer
-    all_y_outer.extend(y_outer_val)
-    all_scores_outer.extend(scores_outer)
+        # voeg per fold toe
+        all_fold_scores.append(scores_outer)
+        all_fold_y.append(y_outer_val)
 
-    # Voeg per fold toe
-    all_fold_scores.append(scores_outer)
-    all_fold_y.append(y_outer_val)
+        # Bereken fold ROC-AUC hier
+        fold_auc = roc_auc_score(y_outer_val, scores_outer)
+        fold_aucs.append(fold_auc)
 
+    # na de loop
     nested_auc = roc_auc_score(all_y_outer, all_scores_outer)
+
+    pred_labels = np.concatenate([(s > 0).astype(int) for s in all_fold_scores])
+    true_labels = np.concatenate([y.values for y in all_fold_y])
+    nested_f2 = fbeta_score(true_labels, pred_labels, beta=2)
+
     feature_counts, consensus_features = summarize_feature_stability(
         features_per_fold, outer_cv.get_n_splits()
     )
     final_params = summarize_params(best_params_per_fold)
-    pred_labels = np.concatenate([ (s > 0).astype(int) for s in all_fold_scores ])
-    true_labels = np.concatenate([ y.values for y in all_fold_y ])
-    nested_f2 = fbeta_score(true_labels, pred_labels, beta=2)
-    fold_aucs = []
-    fold_auc = roc_auc_score(y_outer_val, scores_outer)
-    fold_aucs.append(fold_auc)
 
     return nested_auc, nested_f2, fold_aucs, feature_counts, consensus_features, final_params
-
 def main():
     data = load_data()
     X = data.select_dtypes(include=[np.number]).copy()
