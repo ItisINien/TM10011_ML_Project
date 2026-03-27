@@ -153,6 +153,7 @@ def Forest_Uni():
     results = {
     "nested_auc_uni": float(nested_auc),
     "nested_f2_uni": float(nested_f2),
-    "fold_aucs_uni": float(fold_aucs),
+    "fold_aucs_uni": (fold_aucs),
 }
     return results
+

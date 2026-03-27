@@ -298,6 +298,8 @@ def run_nested_cv(X_trainval, y_trainval):
     all_scores_outer = []
     features_per_fold = []
     best_params_per_fold = []
+    all_fold_scores = []
+    all_fold_y = []
 
     f2_score = make_scorer(fbeta_score, beta=2)
 
@@ -348,20 +350,32 @@ def run_nested_cv(X_trainval, y_trainval):
             f"Outer fold ROC-AUC: "
             f"{roc_auc_score(y_outer_val, scores_outer):.3f}"
         )
+    # na het berekenen van scores_outer
+    all_y_outer.extend(y_outer_val)
+    all_scores_outer.extend(scores_outer)
+
+    # Voeg per fold toe
+    all_fold_scores.append(scores_outer)
+    all_fold_y.append(y_outer_val)
 
     nested_auc = roc_auc_score(all_y_outer, all_scores_outer)
     feature_counts, consensus_features = summarize_feature_stability(
         features_per_fold, outer_cv.get_n_splits()
     )
     final_params = summarize_params(best_params_per_fold)
+    pred_labels = np.concatenate([ (s > 0).astype(int) for s in all_fold_scores ])
+    true_labels = np.concatenate([ y.values for y in all_fold_y ])
+    nested_f2 = fbeta_score(true_labels, pred_labels, beta=2)
+    fold_aucs = []
+    fold_auc = roc_auc_score(y_outer_val, scores_outer)
+    fold_aucs.append(fold_auc)
 
-    return nested_auc, feature_counts, consensus_features, final_params
-
+    return nested_auc, nested_f2, fold_aucs, feature_counts, consensus_features, final_params
 
 def main():
     data = load_data()
     X = data.select_dtypes(include=[np.number]).copy()
-    y = data["label"].map({"benign": 0, "malignant": 1})
+    y = data["label"].map({"benign": 0, "malignant": 1}).astype(int)
 
     X_trainval, X_test, y_trainval, y_test = train_test_split(
         X,
@@ -371,9 +385,8 @@ def main():
         random_state=RANDOM_STATE,
     )
 
-    nested_auc, feature_counts, consensus_features, final_params = run_nested_cv(
-        X_trainval, y_trainval
-    )
+    nested_auc, nested_f2, fold_aucs, feature_counts, consensus_features, final_params = run_nested_cv(X_trainval, y_trainval)
+
 
     print("\n" + "=" * 40)
     print("Feature stability")
@@ -421,5 +434,31 @@ def main():
     save_roc_curve(y_test, test_scores, test_auc)
     run_shap_analysis(final_pipeline, X_trainval, X_test)
 
+
+
+
+# %%
+def SVM_Uni():
+    # 1. Laad de data
+    data = load_data()
+    X = data.select_dtypes(include=[np.number]).copy()
+    y = data["label"].map({"benign": 0, "malignant": 1}).astype(int)
+    # 2. Train/test split
+    X_trainval, X_test, y_trainval, y_test = train_test_split(
+        X, y, test_size=0.2, stratify=y, random_state=RANDOM_STATE
+    )
+
+    # 3. Run nested CV (of je bestaande functie)
+    nested_auc, nested_f2, fold_aucs, _ = run_nested_cv(X_trainval, y_trainval)
+
+    # 4. Stop resultaten in dictionary
+    results = {
+        "nested_auc_SVM_uni": float(nested_auc),
+        "nested_f2_SVM_uni": float(nested_f2),
+        "fold_aucs_SVM_uni": fold_aucs,
+    }
+    return results
+
+# %%
 if __name__ == "__main__":
     main()

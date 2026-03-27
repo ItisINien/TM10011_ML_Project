@@ -93,6 +93,8 @@ all_y_outer_proba = []
 
 feature_importances_list = []
 n_features_rfe = 10
+fold_aucs = []
+
 
 for fold_idx, (outer_train_idx, outer_val_idx) in enumerate(outer_cv.split(X_trainval, y_trainval), 1):
 
@@ -131,7 +133,7 @@ for fold_idx, (outer_train_idx, outer_val_idx) in enumerate(outer_cv.split(X_tra
         n_iter=5,
         cv=inner_cv,
         scoring=f2_scorer,
-        n_jobs=-1,
+        n_jobs=1,
         random_state=42
     )
 
@@ -153,7 +155,7 @@ for fold_idx, (outer_train_idx, outer_val_idx) in enumerate(outer_cv.split(X_tra
     )
 
     fold_auc = roc_auc_score(y_outer_val, y_outer_proba)
-
+    fold_aucs.append(fold_auc)
     print(f"Outer fold AUC: {fold_auc:.3f}")
 
     print(f"Best params: {grid_search.best_params_}")
@@ -177,8 +179,6 @@ nested_f2 = fbeta_score(all_y_outer, y_pred, beta=2)
 
 print(f"\nNested CV F2-score: {nested_f2:.3f}")
 
-
-# %%
 # %%
 # Transformeer features zoals gebruikt in model
 X_model = best_model.named_steps['feat_select'].transform(X_outer_train)
@@ -224,3 +224,13 @@ plt.barh(shap_importance.head(20).feature[::-1],
 plt.xlabel("Mean Absolute SHAP Value")
 plt.title("Top 20 SHAP Feature Importance")
 plt.show()
+
+# %%
+def Forest_opt():
+
+    results = {
+    "nested_auc_forest_opt": float(nested_auc),
+    "nested_f2_forest_opt": float(nested_f2),
+    "fold_aucs_forest_opt": (fold_aucs),
+}
+    return results

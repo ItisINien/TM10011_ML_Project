@@ -141,12 +141,12 @@ plt.xlabel("Mean Absolute SHAP Value")
 plt.title("Top 20 SHAP Feature Importance")
 plt.show()
 
-# %%
+
 # %% FUNCTION FOR NESTED CV RESULTS
 def Forest_Only_results():
     results = {
         "nested_auc_only": float(roc_auc),
         "nested_f2_only": float(nested_f2),
-        "fold_aucs_only": fold_aucs,  # laat dit als lijst
+        "fold_aucs_only": fold_aucs,  
     }
     return results
