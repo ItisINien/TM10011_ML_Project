@@ -1,7 +1,7 @@
 **Machine Learning Analysis for the Differentiation of Benign and Malignant Solid Liver Tumors** 
 
 **Authors**
-Lieve Bron ()
+Lieve Bron (L.Bron-1@student.tudelft.nl)
 Nienke Hendriksen ()
 Loïs Staleman ()
 Jos Vork (jwvork@tudelft.nl)
