@@ -15,7 +15,5 @@ Dataset: Worcliver (186 patients, 493 features)
 **Code**
 Code can be found in final.py. This runs the code from the other .py's. Then Random Forest optimisation based code takes very long to run.
 
-**Notes**
-
 **Contact**
 For questions, contact authors (mail adresses on top).
