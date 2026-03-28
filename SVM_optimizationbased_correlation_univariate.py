@@ -4,7 +4,6 @@ from collections import Counter
 from pathlib import Path
 import matplotlib.pyplot as plt
 from sklearn.base import BaseEstimator, TransformerMixin
-from sklearn.feature_selection import RFE, SelectKBest, f_classif
 from sklearn.metrics import roc_auc_score, roc_curve
 from sklearn.model_selection import (
     RandomizedSearchCV,
@@ -25,20 +24,9 @@ RANDOM_STATE = 42
 N_JOBS = 1
 
 
-class CorrUnivariateOptimizationSelector(BaseEstimator, TransformerMixin):
-    def __init__(
-        self,
-        corr_threshold=0.9,
-        k_univariate=20,
-        n_features_to_select=5,
-        rfe_estimator_c=1.0,
-        rfe_step=1,
-    ):
+class CorrConstantSelector(BaseEstimator, TransformerMixin):
+    def __init__(self, corr_threshold=0.9):
         self.corr_threshold = corr_threshold
-        self.k_univariate = k_univariate
-        self.n_features_to_select = n_features_to_select
-        self.rfe_estimator_c = rfe_estimator_c
-        self.rfe_step = rfe_step
 
     def _to_dataframe(self, X):
         if isinstance(X, pd.DataFrame):
@@ -68,41 +56,14 @@ class CorrUnivariateOptimizationSelector(BaseEstimator, TransformerMixin):
         if X_corr.shape[1] == 0:
             raise ValueError("No features left after constant and correlation filtering.")
 
-        k = min(self.k_univariate, X_corr.shape[1])
-        self.univariate_selector_ = SelectKBest(score_func=f_classif, k=k)
-        self.univariate_selector_.fit(X_corr, y)
-
-        self.univariate_features_ = X_corr.columns[
-            self.univariate_selector_.get_support()
-        ].to_list()
-        X_uni = X_corr[self.univariate_features_]
-
-        n_rfe = min(self.n_features_to_select, X_uni.shape[1])
-        if n_rfe == 0:
-            raise ValueError("No features left for optimization-based feature selection.")
-
-        self.rfe_estimator_ = LinearSVC(
-            C=self.rfe_estimator_c,
-            dual=False,
-            max_iter=10000,
-            random_state=RANDOM_STATE,
-        )
-        self.rfe_selector_ = RFE(
-            estimator=self.rfe_estimator_,
-            n_features_to_select=n_rfe,
-            step=self.rfe_step,
-        )
-        self.rfe_selector_.fit(X_uni, y)
-
-        self.features_ = X_uni.columns[self.rfe_selector_.get_support()].to_list()
+        self.features_ = X_corr.columns.to_list()
         return self
 
     def transform(self, X):
         X_df = self._to_dataframe(X)
         X_non_constant = X_df.drop(columns=self.constant_features_, errors="ignore")
         X_corr = X_non_constant.drop(columns=self.correlation_features_, errors="ignore")
-        X_uni = X_corr[self.univariate_features_]
-        return X_uni[self.features_]
+        return X_corr[self.features_]
 
 
 def build_pipeline():
@@ -110,12 +71,7 @@ def build_pipeline():
         [
             (
                 "feat_select",
-                CorrUnivariateOptimizationSelector(
-                    corr_threshold=0.9,
-                    k_univariate=20,
-                    n_features_to_select=5,
-                    rfe_estimator_c=1.0,
-                ),
+                CorrConstantSelector(corr_threshold=0.9),
             ),
             ("scaler", RobustScaler()),
             ("clf", SVC()),
@@ -238,9 +194,6 @@ def run_nested_cv(X_trainval, y_trainval):
 
     param_dist = {
         "feat_select__corr_threshold": [0.8, 0.85, 0.9],  # Drempel voor wanneer twee features te sterk correleren.
-        "feat_select__k_univariate": [10, 15, 20, 30],  # Aantal features dat na ANOVA univariate selectie overblijft.
-        "feat_select__n_features_to_select": [3, 5, 8, 10],  # Aantal features dat RFE uiteindelijk behoudt.
-        "feat_select__rfe_estimator_c": [0.1, 1, 10],  # C-waarde van de lineaire SVM binnen RFE.
         "clf__kernel": ["linear", "rbf"],  # Type scheidingsgrens van de uiteindelijke SVM.
         "clf__C": [0.1, 1, 10, 100],  # Balans tussen regularisatie en trainingsfouten.
         "clf__gamma": ["scale", 0.1, 0.01, 0.001],  # Relevant voor niet-lineaire kernels zoals RBF.
@@ -289,9 +242,7 @@ def run_nested_cv(X_trainval, y_trainval):
             "Features: "
             f"{X_outer_train.shape[1]} -> "
             f"{X_outer_train.shape[1] - len(selector.constant_features_)} (after constant) -> "
-            f"{X_outer_train.shape[1] - len(selector.constant_features_) - len(selector.correlation_features_)} (after correlation) -> "
-            f"{len(selector.univariate_features_)} (after univariate) -> "
-            f"{len(selector.features_)} (after optimization)"
+            f"{len(selector.features_)} (after correlation)"
         )
         print(f"Selected features: {selector.features_}")
         print(
@@ -342,15 +293,10 @@ def main():
     test_auc = roc_auc_score(y_test, test_scores)
 
     final_selected_features = final_pipeline.named_steps["feat_select"].features_
-    final_univariate_features = (
-        final_pipeline.named_steps["feat_select"].univariate_features_
-    )
 
     print("\n" + "=" * 40)
     print(f"Final test ROC-AUC: {test_auc:.3f}")
-    print(f"Final univariate features ({len(final_univariate_features)}):")
-    print(final_univariate_features)
-    print(f"Final selected features ({len(final_selected_features)}):")
+    print(f"Final selected features after constant/correlation filtering ({len(final_selected_features)}):")
     print(final_selected_features)
     save_roc_curve(y_test, test_scores, test_auc)
     run_shap_analysis(final_pipeline, X_trainval, X_test)
