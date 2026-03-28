@@ -12,6 +12,9 @@ This repository contains code for training and evaluating machine learning model
 **Dataset**
 Dataset: Worcliver (186 patients, 493 features)
 
+**Code**
+Code can be found in final.py.
+
 **Notes**
 
 **Contact**
