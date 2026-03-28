@@ -2,7 +2,7 @@
 
 **Authors**
 Lieve Bron (L.Bron-1@student.tudelft.nl)
-Nienke Hendriksen ()
+Nienke Hendriksen (N.hendriksen@tudelft.nl)
 Loïs Staleman ()
 Jos Vork (jwvork@tudelft.nl)
 
@@ -13,7 +13,7 @@ This repository contains code for training and evaluating machine learning model
 Dataset: Worcliver (186 patients, 493 features)
 
 **Code**
-Code can be found in final.py.
+Code can be found in final.py. This runs the code from the other .py's. Then Random Forest optimisation based code takes very long to run.
 
 **Notes**
 
