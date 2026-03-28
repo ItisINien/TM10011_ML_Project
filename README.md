@@ -13,7 +13,12 @@ This repository contains code for training and evaluating machine learning model
 Dataset: Worcliver (186 patients, 493 features)
 
 **Code**
-Code can be found in final.py. This runs the code from the other .py's. Then Random Forest optimisation based code takes very long to run.
+The main execution script is final.py, which orchestrates the pipeline by calling functions from the other modular scripts. For transparency, all individual scripts and their corresponding code are also available in the main branch of this repository.
+
+Please note: The Random Forest optimization process is computationally intensive and may take a significant amount of time to complete.
+
+**Notes**
+Based on our comparative analysis, the Random Forest model using correlation and constant feature filtering (Forest_Cor_Const.py) achieved the highest performance across all tested strategies and classifiers.
 
 **Contact**
 For questions, contact authors (mail adresses on top).
