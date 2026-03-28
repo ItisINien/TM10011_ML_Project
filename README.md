@@ -2,9 +2,9 @@
 
 **Authors**
 Lieve Bron (L.Bron-1@student.tudelft.nl)
-Nienke Hendriksen (N.hendriksen@tudelft.nl)
-Loïs Staleman ()
-Jos Vork (jwvork@tudelft.nl)
+Nienke Hendriksen (N.hendriksen@student.tudelft.nl)
+Loïs Staleman (l.c.m.staleman@student.tudelft.nl)
+Jos Vork (j.w.vork@student.tudelft.nl)
 
 **Description**
 This repository contains code for training and evaluating machine learning models (Random Forest, Support Vector Machine, Logistic Regression) to differentiate benign and malignant solid liver tumors using radiomic features extracted from T2-weighted MRI scans.
