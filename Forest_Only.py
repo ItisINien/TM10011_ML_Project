@@ -56,7 +56,7 @@ for outer_train_idx, outer_val_idx in outer_cv.split(X_trainval, y_trainval):
     grid_search = RandomizedSearchCV(
         estimator=pipeline,
         param_distributions=param_dist,
-        n_iter=100,           
+        n_iter=100, 
         scoring=f2_scorer,
         n_jobs=-1,
         random_state=42)
@@ -141,8 +141,25 @@ plt.xlabel("Mean Absolute SHAP Value")
 plt.title("Top 20 SHAP Feature Importance")
 plt.show()
 
+# %%
+from sklearn.metrics import roc_curve, auc
 
-# %% FUNCTION FOR NESTED CV RESULTS
+from sklearn.metrics import roc_curve, auc
+
+# ROC curve van nested CV predictions
+fpr, tpr, thresholds = roc_curve(all_y_outer, all_y_outer_proba)
+roc_auc_nested = auc(fpr, tpr)
+
+plt.figure(figsize=(8,6))
+plt.plot(fpr, tpr, label=f"Forest Nested CV ROC (AUC = {roc_auc_nested:.3f})")
+plt.plot([0,1], [0,1], linestyle="--")
+plt.xlabel("False Positive Rate")
+plt.ylabel("True Positive Rate")
+plt.title("ROC Curve – Nested Cross Validation no Feature Selection")
+plt.legend(loc="lower right")
+plt.show()
+
+# %% FUNCTION RESULTS
 def Forest_Only_results(test=False):
     results = {
         "nested_auc_only": float(roc_auc),

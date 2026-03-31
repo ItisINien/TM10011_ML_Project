@@ -229,6 +229,26 @@ print("\nGekozen hyperparameters RandomForest final model:")
 for param, value in pipeline_final.named_steps['clf'].get_params().items():
     print(f"{param}: {value}")
 
+# %%
+# %% Nested ROC curve
+from sklearn.metrics import roc_curve, auc
+
+# ROC curve berekenen op outer fold predictions
+fpr, tpr, thresholds = roc_curve(all_y_outer, all_y_outer_proba)
+roc_auc_nested = auc(fpr, tpr)
+
+plt.figure(figsize=(8,6))
+plt.plot(fpr, tpr, label=f"Nested CV ROC (AUC = {roc_auc_nested:.3f})")
+plt.plot([0,1], [0,1], linestyle="--")
+
+plt.xlabel("False Positive Rate")
+plt.ylabel("True Positive Rate")
+plt.title("ROC Curve – Nested Cross Validation Cor and Const selection")
+plt.legend(loc="lower right")
+plt.grid(alpha=0.3)
+
+plt.show()
+
 
 # %%
 def Forest_const_cor(test=False):

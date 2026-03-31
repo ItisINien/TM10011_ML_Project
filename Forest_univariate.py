@@ -145,7 +145,25 @@ nested_f2 = fbeta_score(all_y_outer, y_pred, beta=2)
 
 print(f"\nNested CV F2-score: {nested_f2:.3f}")
 
+# %%
+# %% Nested ROC curve
+from sklearn.metrics import roc_curve, auc
 
+# ROC berekenen op outer fold predictions
+fpr, tpr, thresholds = roc_curve(all_y_outer, all_y_outer_proba)
+roc_auc_nested = auc(fpr, tpr)
+
+plt.figure(figsize=(8,6))
+plt.plot(fpr, tpr, label=f"Nested CV ROC (AUC = {roc_auc_nested:.3f})")
+plt.plot([0,1], [0,1], linestyle="--")
+
+plt.xlabel("False Positive Rate")
+plt.ylabel("True Positive Rate")
+plt.title("ROC Curve – Nested Cross Validation Univariate Selection")
+plt.legend(loc="lower right")
+plt.grid(alpha=0.3)
+
+plt.show()
 
 # %%
 def Forest_Uni(test=False):
