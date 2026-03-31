@@ -64,7 +64,20 @@ print(f"Nested CV F2-score SVM univariate selection: {nested_f2_svm_uni:.3f}")
 print(f"Aucs 5-folds SVM univariate feature selection: {[round(float(x), 3) for x in aucs_svm_uni]}")
 
 # %%
-from LG import Logistic_Uni
+from LR import Logistic_Uni_opt
+
+results = Logistic_Uni()
+
+nested_auc_lg_uni_opt = results["nested_auc_lg"]
+nested_f2_lg_uni_opt = results["nested_f2_lg"]
+aucs_lg_uni_opt = results["fold_aucs_lg"]
+
+print(f"Nested CV ROC-AUC LG univariate and optimization selection: {nested_auc_lg_uni_opt:.3f}")
+print(f"Nested CV F2-score LG univariate and optimization selection: {nested_f2_lg_uni_opt:.3f}")
+print(f"Aucs 5-folds LG univariate feature and optimization selection: {[round(float(x), 3) for x in aucs_lg_uni_opt]}")
+
+# %%
+from LR_uni import Logistic_Uni
 
 results = Logistic_Uni()
 
@@ -82,11 +95,14 @@ import matplotlib.pyplot as plt
 
 # Verzamel alle AUCs per methode in een dict
 aucs_dict = {
-    "RF Univariate": aucs_forest_uni,
+    #"RF Opt": aucs_forest_opt,
+    "RF Uni": aucs_forest_uni,
     "RF Const+Corr": aucs_forest_const_cor,
     "RF No selection": aucs_forest_only,
-    "SVM Univariate": aucs_svm_uni,
-    "LG Univar + Optimisation": aucs_lg_uni,
+    "SVM Uni": aucs_svm_uni,
+    "LR Uni + Opt": aucs_lg_uni_opt,
+    "LR uni": aucs_lg_uni
+    
     # Voeg hier eventueel nieuwe methodes toe of comment uit wat je niet wil plotten
     # "Nieuwe methode": aucs_nieuw
 }
@@ -110,10 +126,16 @@ nested_aucs = {
     "LG Univariate": nested_auc_lg_uni
 }
 
-best_model_name = max(nested_aucs, key=nested_aucs.get)
+nested_f2s={"RF Const+Corr": nested_f2_forest_const_cor,
+    "RF No selection": nested_f2_forest_only,
+    "SVM Univariate": nested_f2_svm_uni,
+    "LG Univariate": nested_f2_lg_uni
+    }
 
-print("\nBest model based on nested CV AUC:", best_model_name)
-print("Nested AUC:", round(nested_aucs[best_model_name], 3))
+best_model_name = max(nested_f2s, key=nested_aucs.get)
+
+print("\nBest model based on nested CV f2:", best_model_name)
+print("Nested f2:", round(nested_f2s[best_model_name], 3))
 
 # %%
 # %% TESTSET EVALUATION
@@ -131,7 +153,7 @@ elif best_model_name == "SVM Univariate":
     results = SVM_Uni(test=True)
 
 elif best_model_name == "LG Univariate":
-    from LG import Logistic_Uni
+    from LR import Logistic_Uni
     results = Logistic_Uni(test=True)
 
 print("\nTest set results:")
@@ -139,7 +161,7 @@ print("Test ROC-AUC:", round(results["test_auc"], 3))
 
 # --- ROC Curve Sectie ---
 print("\nTest set results:")
-print("Test ROC-AUC:", round(results["test_auc"], 3))
+print("Test f2:", round(results["test_f2"], 3))
 
 # Haal de data uit de results dictionary
 y_true = results["y_test"]
